@@ -1,0 +1,35 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/ *.py[cod] *$py.class
+*.so .eggs/ *.egg-info/ .eggs/
+
+# Rust build artifacts
+target/ debug/ release/
+
+# Node modules & build outputs
+node_modules/ dist/ build/ .parcel-cache/ *.log
+*.lock
+
+# IDE
+.idea/ .vscode/ *.swp .DS_Store Thumbs.db
+
+# Environment secrets (never commit)
+.env .env.local .env.*.local
+
+# Kubernetes secrets
+*.pem *.key secrets/
+
+# Compiled binaries (not in docker images)
+*.exe *.dll
+
+# ML models (downloaded or generated at runtime)
+**/*.onnx **/*.pt
+!ai-engine/training/checkpoints/.gitkeep
+
+# Data volumes
+influxdb_data/ kafka_data/ grafana_data/ models_data/ mlflow_data/
+
+# Test coverage
+coverage/ .coverage htmlcov/
+
+# Temporary files
+*.tmp *.bak *.swp

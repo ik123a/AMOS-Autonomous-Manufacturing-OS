@@ -6,11 +6,13 @@
 
 use anyhow::{Context, Result};
 use ndarray::Array2;
-use onnxruntime::session::{Session, SessionOptions};
-use onnxruntime::GraphOptimizationLevel;
+use onnxruntime::session::{GraphOptimizationLevel, Session, SessionOptions};
 use serde::Serialize;
 use std::path::Path;
+use std::time::Duration;
 use tracing::{debug, info, warn};
+
+use crate::config::InferenceConfig;
 
 /// Per-channel anomaly result with explainability data.
 #[derive(Debug, Clone, Serialize)]
@@ -53,6 +55,7 @@ const SENSOR_LABELS: &[&str] = &[
 ];
 
 /// ONNX-based anomaly detection engine using a deep autoencoder.
+/// Uses reconstruction error: high error = anomalous behavior.
 pub struct InferenceEngine {
     session: Session,
     input_dim: usize,
@@ -77,18 +80,21 @@ impl InferenceEngine {
         session_options.set_graph_optimization_level(GraphOptimizationLevel::Level3);
         session_options.set_inter_op_num_threads(config.num_threads as i32);
         session_options.set_intra_op_num_threads(config.num_threads as i32);
+        session_options.set_session_timeout(Duration::from_secs(300));
 
         let session = Session::from_file(&session_options, &config.model_path)
             .context("Failed to load ONNX model")?;
 
         // Infer input dimension from session input metadata
-        let input_dim = session
-            .get_input_count()
-            .unwrap_or(6);
+        let inputs = session.get_inputs().ok();
+        let input_dim = inputs
+            .and_then(|i| i.input_type().as_tensor())
+            .map(|t| t.dims().last().copied().unwrap_or(config.input_size as i64) as usize)
+            .unwrap_or(config.input_size);
 
         let engine = Self {
             session,
-            input_dim: input_dim as usize,
+            input_dim,
             model_name: config.model_name.clone(),
             threshold: config.anomaly_threshold,
         };
@@ -111,26 +117,34 @@ impl InferenceEngine {
     pub fn detect(&self, values: &[f64]) -> Result<AnomalyResult> {
         let start = std::time::Instant::now();
 
-        // Build input tensor [1, input_dim]
-        let input = Array2::from_shape_vec((1, self.input_dim), values.to_vec())
-            .context("invalid input shape")?;
+        // Build input tensor [1, input_dim] as f32
+        let input: Array2<f32> = Array2::from_shape_vec((1, self.input_dim), {
+            let mut v = Vec::with_capacity(self.input_dim);
+            for (i, &val) in values.iter().enumerate() {
+                if i < self.input_dim {
+                    v.push(val as f32);
+                }
+            }
+            v
+        })
+        .context("invalid input shape")?;
 
-        let input_tensor: onnxruntime::tensor::OrtTensor<
-            ndarray::Array2<f32>,
-            onnxruntime::tensor::OrtOwnedTensorT<f32, ndarray::Array2<f32>>,
-        > = self.session.run(vec![input.into()])?;
-
-        let output = input_tensor
-            .iter()
-            .copied()
-            .collect::<Vec<f32>>();
-
+        let outputs = self.session.run(vec![input.into()])?;
         let exec_time = start.elapsed().as_secs_f64() * 1000.0;
+
+        // Extract output tensor — first output is reconstruction
+        let output_tensor = &outputs[0];
+        let shape = output_tensor.dimensions();
+        let output_dim = shape.last().copied().unwrap_or(self.input_dim as i64) as usize;
+
+        // Get output values
+        let mut reconstruction = vec![0.0f32; output_dim];
+        output_tensor.copy_to_slice(&mut reconstruction);
 
         // Compute per-feature reconstruction error (|input - output|)
         let feature_errors: Vec<f64> = values
             .iter()
-            .zip(output.iter())
+            .zip(reconstruction.iter())
             .map(|(i, o)| (i - *o as f64).abs())
             .collect();
 
@@ -154,6 +168,7 @@ impl InferenceEngine {
     }
 
     /// Run inference on a batch of windows (for backfill / historical analysis).
+    #[allow(dead_code)]
     pub fn detect_batch(&self, batch: &[[f64]]) -> Result<Vec<AnomalyResult>> {
         batch.iter().map(|window| self.detect(window)).collect()
     }

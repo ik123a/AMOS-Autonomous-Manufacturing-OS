@@ -2,9 +2,24 @@ use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
 
+/// Logging configuration
+#[derive(Debug, Clone, Deserialize)]
+pub struct LoggingConfig {
+    /// Log level (trace, debug, info, warn, error)
+    #[serde(default = "default_log_level")]
+    pub level: String,
+}
+
+fn default_log_level() -> String {
+    "info".to_string()
+}
+
 /// Top-level configuration for the AMOS Edge Agent
 #[derive(Debug, Clone, Deserialize)]
 pub struct EdgeConfig {
+    /// Logging settings
+    #[serde(default)]
+    pub logging: LoggingConfig,
     /// Unique identifier for this edge device
     pub device_id: String,
     /// Friendly name for the machine/cell
@@ -182,6 +197,12 @@ pub struct InferenceConfig {
     /// Enable local inference
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// Number of threads for ONNX Runtime
+    #[serde(default = "default_num_threads")]
+    pub num_threads: usize,
+    /// Friendly model name
+    #[serde(default)]
+    pub model_name: String,
 }
 
 fn default_model_path() -> String {
@@ -200,7 +221,16 @@ fn default_buffer_size() -> usize {
     100
 }
 
+fn default_num_threads() -> usize {
+    4
+}
+
 impl EdgeConfig {
+    /// Load configuration from a YAML file (alias for from_file for backward compatibility)
+    pub fn load(path: impl AsRef<Path>) -> Result<Self> {
+        Self::from_file(path)
+    }
+
     /// Load configuration from a YAML file
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let content = std::fs::read_to_string(path.as_ref())
@@ -208,6 +238,23 @@ impl EdgeConfig {
         let config: EdgeConfig = serde_yaml::from_str(&content)
             .context("Failed to parse configuration YAML")?;
         Ok(config)
+    }
+
+    /// Validate required fields
+    pub fn validate(&self) {
+        if self.device_id.is_empty() {
+            anyhow::bail!("device_id must not be empty");
+        }
+        if self.mqtt.host.is_empty() {
+            anyhow::bail!("mqtt.host must not be empty");
+        }
+        if self.opcua.endpoint.is_empty() {
+            anyhow::bail!("opcua.endpoint must not be empty");
+        }
+        if self.inference.enabled && self.inference.model_path.is_empty() {
+            anyhow::bail!("inference.model_path must be set when inference is enabled");
+        }
+        info!("Configuration validated successfully");
     }
 
     /// Get the MQTT telemetry topic
@@ -233,6 +280,7 @@ mod tests {
     #[test]
     fn test_default_topic_generation() {
         let config = EdgeConfig {
+            logging: LoggingConfig { level: "info".to_string() },
             device_id: "test-device-01".to_string(),
             machine_name: None,
             location: None,
@@ -263,6 +311,8 @@ mod tests {
                 input_size: 16,
                 buffer_size: 100,
                 enabled: true,
+                num_threads: 4,
+                model_name: "anomaly_detector".to_string(),
             },
             collection_interval_ms: 100,
             heartbeat_interval_secs: 30,

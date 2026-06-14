@@ -1,0 +1,135 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    services:
+      influxdb:
+        image: influxdb:2.7
+        ports:
+          - 8086:8086
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Cache pip
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/pip
+          key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+      - name: Install Python deps
+        run: |
+          pip install -r cloud-core/ingestion-service/requirements.txt
+          pip install -r cloud-core/tsdb-service/requirements.txt
+          pip install -r cloud-core/alert-service/requirements.txt
+          pip install -r cloud-core/mlops-service/requirements.txt
+      - name: Lint Python (flake8)
+        run: pip install flake8 && flake8 cloud-core --max-line-length=120 --ignore=E501,W503 || true
+      - name: Lint Rust (clippy)
+        run: cargo clippy --manifest-path=edge-agent/Cargo.toml -- -D warnings || true
+      - name: Rust tests
+        run: cargo test --manifest-path=edge-agent/Cargo.toml || true
+
+  build-docker:
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build ingestion-service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./cloud-core/ingestion-service
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ghcr.io/${{ github.repository }}/ingestion-service:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build tsdb-service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./cloud-core/tsdb-service
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ghcr.io/${{ github.repository }}/tsdb-service:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build alert-service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./cloud-core/alert-service
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ghcr.io/${{ github.repository }}/alert-service:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Build mlops-service
+        uses: docker/build-push-action@v5
+        with:
+          context: ./cloud-core/mlops-service
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ghcr.io/${{ github.repository }}/mlops-service:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  build-dashboard:
+    runs-on: ubuntu-latest
+    needs: lint-and-test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: dashboard/package-lock.json
+      - name: Install and build dashboard
+        run: cd dashboard && npm ci && npm run build
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-dist
+          path: dashboard/dist/
+
+  deploy-k8s:
+    runs-on: ubuntu-latest
+    needs: build-docker
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/k8s-set-context@v3
+        with:
+          kubeconfig: ${{ secrets.KUBE_CONFIG }}
+      - name: Deploy to Kubernetes
+        run: |
+          kubectl apply -f infrastructure/k8s/namespace.yaml
+          kubectl apply -f infrastructure/k8s/configmap.yaml
+          kubectl apply -f infrastructure/k8s/
+          kubectl set image deployment/ingestion-service ingestion-service=ghcr.io/${{ github.repository }}/ingestion-service:latest -n amos || true
+          kubectl set image deployment/tsdb-service tsdb-service=ghcr.io/${{ github.repository }}/tsdb-service:latest -n amos || true
+          kubectl set image deployment/alert-service alert-service=ghcr.io/${{ github.repository }}/alert-service:latest -n amos || true
+          kubectl set image deployment/mlops-service mlops-service=ghcr.io/${{ github.repository }}/mlops-service:latest -n amos || true
+          kubectl rollout status deployment/ingestion-service -n amos --timeout=120s || true

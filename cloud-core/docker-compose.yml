@@ -12,6 +12,8 @@ volumes:
   kafka_data:
   influxdb_data:
   grafana_data:
+  models_data:
+  mlflow_data:
 
 services:
   # ─── Message Broker ───────────────────────────────────────────
@@ -73,6 +75,17 @@ services:
       - GF_SECURITY_ADMIN_PASSWORD=amos_admin_2024
       - GF_INSTALL_PLUGINS=influxdb-flightsql-datasource
 
+  # ─── MLflow Experiment Tracker ──────────────────────────────
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:latest
+    networks:
+      - amos-net
+    ports:
+      - "5000:5000"
+    command: mlflow server --host 0.0.0.0 --backend-store-uri sqlite:///mlflow.db --default-artifact-root /mlflow-artifacts
+    volumes:
+      - mlflow_data:/mlflow-artifacts
+
   # ─── Microservices ───────────────────────────────────────────
   ingestion-service:
     build: ./ingestion-service
@@ -129,6 +142,7 @@ services:
       - SERVICE_NAME=mlops-service
       - MODEL_STORE_PATH=/opt/amos/models
       - MLFLOW_TRACKING_URI=http://mlflow:5000
-    depends_on: []
+    depends_on:
+      - mlflow
     volumes:
-      - ./models:/opt/amos/models
+      - models_data:/opt/amos/models

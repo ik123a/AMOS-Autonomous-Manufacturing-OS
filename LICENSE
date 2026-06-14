@@ -1,0 +1,47 @@
+# AMOS (Autonomous Manufacturing OS) — Proprietary License
+
+Copyright (c) 2024 AMOS Project Team
+
+## Proprietary and Confidential
+
+This software ("AMOS") is proprietary to the AMOS Project Team. This license agreement ("Agreement") governs the use of AMOS. By accessing, installing, or using AMOS, you ("Licensee") agree to be bound by the terms of this Agreement.
+
+## Grant of License
+
+Subject to the terms of this Agreement, the AMOS Project Team grants Licensee a limited, non-exclusive, non-transferable license to use AMOS solely for Licensee's internal business purposes in connection with industrial manufacturing operations.
+
+## Restrictions
+
+Licensee shall NOT:
+
+1. Copy, modify, distribute, sell, or sublicense AMOS or any part thereof
+2. Reverse engineer, disassemble, or decompile AMOS
+3. Use AMOS to provide services to third parties
+4. Remove, alter, or obscure any proprietary notices on AMOS
+5. Use AMOS in any manner that violates applicable export control laws
+
+## Intellectual Property
+
+AMOS and all related documentation, algorithms, models, and designs are the exclusive property of the AMOS Project Team. No title to or ownership of AMOS or any intellectual property rights therein is transferred to Licensee beyond the license expressly granted in this Agreement.
+
+## Confidentiality
+
+Licensee agrees to maintain the confidentiality of AMOS and shall not disclose AMOS source code, trade secrets, or proprietary information to any third party without prior written consent of the AMOS Project Team.
+
+## No Warranty
+
+AMOS IS PROVIDED "AS IS" WITHOUT WARRANTY OF ANY KIND. THE AMOS PROJECT TEAM DISCLAIMS ALL WARRANTIES, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO IMPLIED WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT.
+
+## Limitation of Liability
+
+IN NO EVENT SHALL THE AMOS PROJECT TEAM BE LIABLE FOR ANY INDIRECT, INCIDENTAL, SPECIAL, CONSEQUENTIAL, OR PUNITIVE DAMAGES, OR ANY LOSS OF PROFITS, REVENUE, DATA, OR BUSINESS OPPORTUNITIES ARISING OUT OF OR RELATED TO AMOS.
+
+## Termination
+
+This Agreement terminates immediately upon breach of any term. Upon termination, Licensee must destroy all copies of AMOS in their possession.
+
+## Governing Law
+
+This Agreement is governed by the laws of the jurisdiction in which the AMOS Project Team is headquartered.
+
+For licensing inquiries, contact: licensing@amos-platform.io

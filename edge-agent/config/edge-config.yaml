@@ -5,6 +5,10 @@ device_id: "edge-plant1-001"
 machine_name: "CNC-Machine-04"
 location: "Building-A-Line-3"
 
+# Logging
+logging:
+  level: "info"  # trace, debug, info, warn, error
+
 # Data collection settings
 collection_interval_ms: 100  # 100ms = 10Hz sampling
 heartbeat_interval_secs: 30
@@ -93,7 +97,9 @@ modbus:
 # ML Inference Configuration
 inference:
   enabled: true
+  model_name: "anomaly_detector"
   model_path: "/opt/amos/models/anomaly.onnx"
   anomaly_threshold: 0.05
-  input_size: 16
-  buffer_size: 100
+  input_size: 6  # Number of sensor channels
+  buffer_size: 12  # Sliding window size
+  num_threads: 4

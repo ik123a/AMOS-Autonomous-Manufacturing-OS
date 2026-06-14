@@ -158,3 +158,25 @@ impl HealthMonitor {
         health
     }
 }
+
+/// Publish health status to MQTT broker at regular intervals.
+pub async fn publish_health_loop(
+    mqtt: std::sync::Arc<tokio::sync::Mutex<crate::mqtt::MqttClient>>,
+    device_id: String,
+    interval_secs: u64,
+) {
+    let mut monitor = HealthMonitor::new(&device_id);
+
+    loop {
+        tokio::time::sleep(tokio::time::Duration::from_secs(interval_secs)).await;
+
+        let health = monitor.collect();
+        let payload = serde_json::to_string(&health).unwrap_or_default();
+
+        let topic = format!("amos/{}/health", device_id);
+        let mqtt = mqtt.lock().await;
+        if let Err(e) = mqtt.publish("health", &payload).await {
+            tracing::warn!("Failed to publish health: {}", e);
+        }
+    }
+}
