@@ -9,148 +9,128 @@ use clap::Parser;
 use std::sync::Arc;
 use tokio::signal;
 use tracing::{error, info, warn};
-use tracing_subscriber::EnvFilter;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
-use config::EdgeConfig;
-use collectors::opcua::OpcUaCollector;
-use collectors::modbus::ModbusCollector;
-use mqtt::MqttClient;
-use inference::InferenceEngine;
-use health::HealthMonitor;
+use crate::collectors::{modbus::ModbusCollector, opcua::OpcUaCollector};
+use crate::config::EdgeConfig;
+use crate::health::publish_health_loop;
+use crate::inference::InferenceEngine;
+use crate::mqtt::MqttClient;
 
-/// AMOS Edge Agent — Industrial IoT data ingestion and ML inference
-#[derive(Parser, Debug)]
-#[command(name = "amos-edge-agent", version, about)]
-struct Args {
-    /// Path to configuration file
-    #[arg(short = 'c', long, default_value = "/etc/amos/edge-config.yaml")]
-    config: String,
-}
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    // Initialize logging
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("amos_edge_agent=info")),
-        )
-        .with_target(true)
-        .init();
+    // Parse CLI args
+    let cli = Cli::parse();
+    let config = EdgeConfig::load(&cli.config)?;
+    config.validate();
 
-    info!("AMOS Edge Agent starting...");
+    // Init logging
+    init_tracing(&config);
+    info!("AMOS Edge Agent v{} starting up...", VERSION);
+    info!("Device: {} @ {}", config.device_id, config.location);
 
-    // Parse CLI arguments
-    let args = Args::parse();
+    // Shared state
+    let shared = Arc::new(SharedState::default());
 
-    // Load configuration
-    let config = EdgeConfig::from_file(&args.config)
-        .expect("Failed to load configuration");
-    info!("Configuration loaded for device: {}", config.device_id);
+    // ── MQTT ──────────────────────────────────────────────────────────────────
+    let mqtt = MqttClient::new(&config.mqtt).await?;
+    let mqtt = Arc::new(tokio::sync::Mutex::new(mqtt));
 
-    // Connect to MQTT broker
-    let mqtt_client = Arc::new(
-        MqttClient::new(
-            &config.mqtt.host,
-            config.mqtt.port,
-            &config.mqtt.client_id,
-            config.mqtt.username.as_deref(),
-            config.mqtt.password.as_deref(),
-            config.mqtt.use_tls,
-            config.mqtt.ca_cert_path.as_deref(),
-        )
-        .await
-        .expect("Failed to connect to MQTT broker"),
-    );
-    info!("Connected to MQTT broker at {}:{}", config.mqtt.host, config.mqtt.port);
-
-    // Initialize the inference engine
-    // In production, this loads the actual ONNX model
-    let inference = Arc::new(InferenceEngine::new(
-        &config.inference.model_path,
-        config.inference.anomaly_threshold,
-        config.inference.input_size,
-        config.inference.buffer_size,
-        config.inference.enabled,
-        &config.device_id,
-    ));
-
-    // Initialize health monitor
-    let mut health_monitor = HealthMonitor::new(&config.device_id);
-
-    // Start OPC-UA collector
-    let opcua_config = config.clone();
-    let opcua_mqtt = mqtt_client.clone();
-    let opcua_handle = tokio::spawn(async move {
-        let collector = OpcUaCollector::new(opcua_config, opcua_mqtt);
-        if let Err(e) = collector.run().await {
-            error!("OPC-UA collector exited with error: {}", e);
-        }
-    });
-
-    // Start Modbus collector (if configured)
-    let modbus_handle = if let Some(modbus_cfg) = config.modbus.clone() {
-        let modbus_mqtt = mqtt_client.clone();
-        let device_id = config.device_id.clone();
-        Some(tokio::spawn(async move {
-            let collector = ModbusCollector::new(modbus_cfg, device_id, modbus_mqtt);
-            if let Err(e) = collector.run().await {
-                error!("Modbus collector exited with error: {}", e);
-            }
-        }))
+    // ── Inference Engine ─────────────────────────────────────────────────────
+    let inference = if config.inference.enabled {
+        let eng = InferenceEngine::new(&config.inference).await?;
+        info!("ONNX inference enabled — {} sensor channels", eng.input_dim());
+        Some(eng)
     } else {
+        warn!("ML inference DISABLED — running in passthrough mode");
         None
     };
 
-    // Main health publishing loop
+    // ── OPC-UA Collector ──────────────────────────────────────────────────────
+    let opcua_handles: Vec<_> = config
+        .monitoring
+        .opcua_nodes
+        .iter()
+        .filter(|n| n.enabled)
+        .map(|node| {
+            let config = config.clone();
+            let mqtt = mqtt.clone();
+            let shared = shared.clone();
+            let inference = inference.clone();
+            tokio::spawn(async move {
+                let collector = OpcUaCollector::new(&config, node);
+                collector.run(mqtt, shared, inference).await
+            })
+        })
+        .collect();
+
+    // ── Modbus Collector ──────────────────────────────────────────────────────
+    let modbus_handles: Vec<_> = config
+        .monitoring
+        .modbus_registers
+        .iter()
+        .filter(|r| r.enabled)
+        .map(|reg| {
+            let config = config.clone();
+            let mqtt = mqtt.clone();
+            let shared = shared.clone();
+            let inference = inference.clone();
+            tokio::spawn(async move {
+                let collector = ModbusCollector::new(&config, reg);
+                collector.run(mqtt, shared, inference).await
+            })
+        })
+        .collect();
+
+    // ── Health Publisher ───────────────────────────────────────────────────────
+    let health_mqtt = mqtt.clone();
     let health_device_id = config.device_id.clone();
-    let health_mqtt = mqtt_client.clone();
-    let health_interval = config.heartbeat_interval_secs;
+    let health_interval = config.monitoring.health_interval_secs;
     let health_handle = tokio::spawn(async move {
-        let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(health_interval));
-        loop {
-            interval.tick().await;
-            // In a real implementation, health_monitor would be shared state
-            // For now, publish a simple heartbeat
-            let health = serde_json::json!({
-                "timestamp": chrono::Utc::now().to_rfc3339(),
-                "device_id": health_device_id,
-                "status": "running",
-            });
-            if let Err(e) = health_mqtt
-                .publish(
-                    &format!("{}/{}/health", "amos", health_device_id),
-                    &health.to_string(),
-                )
-                .await
-            {
-                warn!("Failed to publish health: {}", e);
-            }
-        }
+        publish_health_loop(health_mqtt, health_device_id, health_interval).await
     });
 
-    // Wait for shutdown signal
-    info!("AMOS Edge Agent is running. Waiting for shutdown signal...");
+    // ── Shutdown ───────────────────────────────────────────────────────────────
+    info!("All collectors started — listening for shutdown signal...");
 
-    match signal::ctrl_c().await {
-        Ok(()) => {
-            info!("Shutdown signal received. Gracefully shutting down...");
+    tokio::select! {
+        _ = signal::ctrl_c() => {
+            info!("SIGINT received — shutting down gracefully");
         }
-        Err(e) => {
-            error!("Failed to listen for shutdown signal: {}", e);
+        _ = signal::SIGTERM => {
+            info!("SIGTERM received — shutting down gracefully");
         }
     }
 
-    // Cancel all collector tasks
-    opcua_handle.abort();
-    if let Some(handle) = modbus_handle {
-        handle.abort();
-    }
-    health_handle.abort();
+    // Cancel all tasks
+    for h in opcua_handles { let _ = h.abort(); }
+    for h in modbus_handles { let _ = h.abort(); }
+    let _ = health_handle.abort();
 
-    // Disconnect MQTT
-    mqtt_client.disconnect().await?;
-
-    info!("AMOS Edge Agent shutdown complete.");
+    info!("AMOS Edge Agent v{} stopped cleanly", VERSION);
     Ok(())
+}
+
+fn init_tracing(config: &EdgeConfig) {
+    let filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(&config.logging.level));
+    tracing_subscriber::registry()
+        .with(filter)
+        .with(tracing_subscriber::fmt::layer().with_target(true))
+        .init();
+}
+
+#[derive(Parser, Debug)]
+#[command(name = "amos-edge-agent", version = VERSION)]
+struct Cli {
+    #[arg(long, default_value = "/etc/amos/edge-config.yaml")]
+    config: String,
+}
+
+#[derive(Default)]
+pub struct SharedState {
+    pub readings: std::sync::Mutex<Vec<crate::mqtt::SensorReading>>,
+    pub errors: std::sync::Mutex<Vec<String>>,
 }

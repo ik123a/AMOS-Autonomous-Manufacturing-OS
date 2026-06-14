@@ -1,325 +1,211 @@
 #!/usr/bin/env python3
 """
 AMOS Stream Processor
-Real-time sliding window inference for streaming sensor data.
+Real-time sliding-window inference for streaming sensor data.
 
 Usage:
     processor = StreamProcessor(model_path="models/anomaly.onnx")
-    processor.process({"sensor_0": 12.5, "sensor_1": 45.2, ...})
+    processor.on_anomaly(lambda r: send_alert(r))  # callback
+    processor.start(mqtt_broker="mqtt.amos.io", topic="plant1/#")
 """
 
-import logging
 import threading
+import time
+import json
 from collections import deque
-from typing import Callable, Optional, List, Dict, Any
 from dataclasses import dataclass, field
+from typing import Callable, Dict, List, Optional
 
+import paho.mqtt.client as mqtt
+from numpy.typing import NDArray
 import numpy as np
-
-from onnx_runner import AnomalyDetector
-
-logger = logging.getLogger("amos-stream-processor")
 
 
 @dataclass
 class AnomalyEvent:
-    """Event emitted when an anomaly is detected."""
-    timestamp: float
+    device_id: str
+    sensor_name: str
     anomaly_score: float
     threshold: float
-    sensor_contributions: List[Dict]
-    buffer_snapshot: List[float]
-    device_id: str = "unknown"
-
-
-class SlidingWindowBuffer:
-    """Maintains a sliding window of sensor values for inference."""
-
-    def __init__(self, buffer_size: int = 100, input_size: int = 16):
-        self.buffer_size = buffer_size
-        self.input_size = input_size
-        self.buffer: deque = deque(maxlen=buffer_size)
-        self.running_mean: Optional[float] = None
-        self.running_std: Optional[float] = None
-
-    def add(self, value: float):
-        """Add a single sensor value to the buffer."""
-        self.buffer.append(value)
-        # Update running stats
-        if len(self.buffer) >= 2:
-            arr = np.array(self.buffer)
-            self.running_mean = float(np.mean(arr))
-            self.running_std = float(np.std(arr)) + 1e-8
-
-    def is_ready(self) -> bool:
-        """Check if buffer has enough data for inference."""
-        return len(self.buffer) >= self.input_size
-
-    def get_normalized(self) -> np.ndarray:
-        """Get the most recent input_size values, z-score normalized."""
-        if len(self.buffer) < self.input_size:
-            return None
-
-        recent = list(self.buffer)[-self.input_size:]
-        arr = np.array(recent, dtype=np.float32)
-
-        if self.running_mean is not None and self.running_std is not None:
-            arr = (arr - self.running_mean) / self.running_std
-
-        return arr
-
-    def get_raw(self) -> List[float]:
-        """Get the most recent input_size raw values."""
-        if len(self.buffer) < self.input_size:
-            return []
-        return list(self.buffer)[-self.input_size:]
-
-    def reset(self):
-        """Clear the buffer."""
-        self.buffer.clear()
-        self.running_mean = None
-        self.running_std = None
+    is_anomaly: bool
+    feature_errors: Dict[str, float]
+    timestamp: str
+    window: List[float]
 
 
 class StreamProcessor:
-    """Processes streaming sensor data with sliding window inference."""
+    """
+    Maintains a sliding window buffer per device and runs inference
+    each time the buffer fills. Emits anomaly events via callback.
+    """
 
     def __init__(
         self,
         model_path: str,
+        window_size: int = 12,
         threshold: float = 0.05,
-        input_size: int = 16,
-        buffer_size: int = 100,
-        device_id: str = "unknown",
-        anomaly_callback: Optional[Callable[[AnomalyEvent], None]] = None,
-        cooldown_seconds: float = 30.0,
+        cooldown_secs: float = 30.0,
+        sensor_labels: Optional[List[str]] = None,
     ):
-        self.detector = AnomalyDetector(
-            model_path=model_path,
-            threshold=threshold,
-            input_size=input_size,
-        )
-        self.buffer = SlidingWindowBuffer(
-            buffer_size=buffer_size,
-            input_size=input_size,
-        )
-        self.device_id = device_id
-        self.anomaly_callback = anomaly_callback
-        self.cooldown_seconds = cooldown_seconds
-        self._last_alert_time = 0.0
-        self._sensor_names: List[str] = []
+        from .onnx_runner import AnomalyDetector
+        self.detector = AnomalyDetector(model_path, threshold=threshold)
+        self.window_size = window_size
+        self.cooldown_secs = cooldown_secs
+        self.sensor_labels = sensor_labels or [
+            "Spindle_Temperature", "Spindle_Vibration", "Spindle_Torque",
+            "Coolant_Flow", "Cutting_Speed", "Feed_Rate",
+        ]
+
+        # Per-device sliding windows
+        self.windows: Dict[str, deque] = {}
+        # Per-device last alert time
+        self.last_alert: Dict[str, float] = {}
+
+        self.anomaly_callback: Optional[Callable[[AnomalyEvent], None]] = None
         self._lock = threading.Lock()
-        self._total_processed = 0
-        self._anomaly_count = 0
+        self._running = False
 
-        logger.info(
-            f"StreamProcessor initialized | device={device_id} | "
-            f"model={model_path} | threshold={threshold} | "
-            f"input_size={input_size}"
-        )
+    def on_anomaly(self, callback: Callable[[AnomalyEvent], None]) -> None:
+        """Register a callback for anomaly events."""
+        self.anomaly_callback = callback
 
-    def set_sensor_names(self, names: List[str]):
-        """Set the names of monitored sensors (for explainability)."""
-        self._sensor_names = names
-
-    def process(self, sensor_readings: Dict[str, float]) -> Optional[AnomalyEvent]:
-        """Process a dictionary of sensor readings.
-
-        Args:
-            sensor_readings: Dict mapping sensor_name -> value
-                            (e.g., {"vibration": 12.5, "temperature": 65.2, ...})
-
-        Returns:
-            AnomalyEvent if anomaly detected, None otherwise
+    def ingest(self, device_id: str, sensor_values: List[float], timestamp: str) -> Optional[AnomalyEvent]:
         """
-        import time
-
-        # Flatten to single vector (sorted by sensor name for consistency)
-        if not self._sensor_names:
-            self._sensor_names = sorted(sensor_readings.keys())
-
-        values = [sensor_readings.get(name, 0.0) for name in self._sensor_names]
-
-        # Add each value to its own buffer (multi-sensor support)
-        # For simplicity, flatten all sensor values into one buffer
-        # In production: one buffer per sensor
-        with self._lock:
-            for v in values:
-                self.buffer.add(v)
-            self._total_processed += 1
-
-        # Check if ready for inference
-        if not self.buffer.is_ready():
-            return None
-
-        # Get normalized input
-        input_vector = self.buffer.get_normalized()
-        if input_vector is None:
-            return None
-
-        # Run inference
-        result = self.detector.predict(input_vector.tolist())
-
-        # Check anomaly
-        if not result["is_anomaly"]:
-            return None
-
-        # Rate limiting
-        now = time.time()
-        if now - self._last_alert_time < self.cooldown_seconds:
-            logger.debug(f"Anomaly detected but in cooldown ({now - self._last_alert_time:.0f}s)")
-            return None
-
-        self._last_alert_time = now
-        self._anomaly_count += 1
-
-        # Create event
-        event = AnomalyEvent(
-            timestamp=now,
-            anomaly_score=result["anomaly_score"],
-            threshold=result["threshold"],
-            sensor_contributions=result["sensor_contributions"],
-            buffer_snapshot=self.buffer.get_raw(),
-            device_id=self.device_id,
-        )
-
-        logger.warning(
-            f"ANOMALY DETECTED | device={self.device_id} | "
-            f"score={event.anomaly_score:.4f} | "
-            f"threshold={event.threshold} | "
-            f"total_anomalies={self._anomaly_count}"
-        )
-
-        # Fire callback
-        if self.anomaly_callback:
-            try:
-                self.anomaly_callback(event)
-            except Exception as e:
-                logger.error(f"Anomaly callback failed: {e}")
-
-        return event
-
-    def process_raw(self, values: List[float]) -> Optional[AnomalyEvent]:
-        """Process a raw list of sensor values.
-
-        Args:
-            values: Flat list of sensor readings
-
-        Returns:
-            AnomalyEvent if anomaly detected, None otherwise
+        Ingest a reading from a device. Returns AnomalyEvent if anomaly detected.
+        Callers can use this directly without MQTT.
         """
+        if len(sensor_values) != self.detector.input_dim:
+            raise ValueError(
+                f"Expected {self.detector.input_dim} sensor values, got {len(sensor_values)}"
+            )
+
         with self._lock:
-            for v in values:
-                self.buffer.add(v)
-            self._total_processed += 1
+            # Init or reset window for this device
+            if device_id not in self.windows:
+                self.windows[device_id] = deque(maxlen=self.window_size)
 
-        if not self.buffer.is_ready():
-            return None
+            self.windows[device_id].append(sensor_values)
 
-        input_vector = self.buffer.get_normalized()
-        if input_vector is None:
-            return None
+            # Only run inference when window is full
+            if len(self.windows[device_id]) < self.window_size:
+                return None
 
-        result = self.detector.predict(input_vector.tolist())
+            # Run inference on the average of the window
+            window_arr = np.array(self.windows[device_id])
+            avg_values = window_arr.mean(axis=0).tolist()
+            result = self.detector.detect(avg_values)
 
-        if not result["is_anomaly"]:
-            return None
+            # Cooldown check
+            now = time.time()
+            last = self.last_alert.get(device_id, 0)
+            in_cooldown = (now - last) < self.cooldown_secs
 
-        import time
-        now = time.time()
-        if now - self._last_alert_time < self.cooldown_seconds:
-            return None
+            if result.is_anomaly and not in_cooldown:
+                self.last_alert[device_id] = now
 
-        self._last_alert_time = now
-        self._anomaly_count += 1
+                # Build per-sensor errors dict
+                errors_dict = dict(zip(self.sensor_labels, result.feature_errors))
 
-        event = AnomalyEvent(
-            timestamp=now,
-            anomaly_score=result["anomaly_score"],
-            threshold=result["threshold"],
-            sensor_contributions=result["sensor_contributions"],
-            buffer_snapshot=self.buffer.get_raw(),
-            device_id=self.device_id,
-        )
+                event = AnomalyEvent(
+                    device_id=device_id,
+                    sensor_name="",  # multi-sensor
+                    anomaly_score=result.anomaly_score,
+                    threshold=result.threshold,
+                    is_anomaly=True,
+                    feature_errors=errors_dict,
+                    timestamp=timestamp,
+                    window=avg_values,
+                )
 
-        if self.anomaly_callback:
+                if self.anomaly_callback:
+                    try:
+                        self.anomaly_callback(event)
+                    except Exception as e:
+                        print(f"[StreamProcessor] Callback error: {e}")
+
+                return event
+
+        return None
+
+    def start_mqtt(
+        self,
+        broker: str,
+        port: int = 8883,
+        topic: str = "amos/+/telemetry",
+        username: Optional[str] = None,
+        password: Optional[str] = None,
+    ) -> mqtt.Client:
+        """Start consuming telemetry from MQTT broker."""
+        client = mqtt.Client()
+        if username:
+            client.username_pw_set(username, password)
+
+        def on_connect(c, u, f, rc):
+            if rc == 0:
+                print(f"[StreamProcessor] Connected to MQTT {broker}:{port}")
+                c.subscribe(topic, qos=1)
+            else:
+                print(f"[StreamProcessor] MQTT connection failed: rc={rc}")
+
+        def on_message(c, userdata, msg):
             try:
-                self.anomaly_callback(event)
+                payload = json.loads(msg.payload.decode())
+                device_id = payload.get("device_id", "unknown")
+                timestamp = payload.get("timestamp", "")
+
+                for reading in payload.get("readings", []):
+                    # Accumulate into the device's multi-sensor window
+                    self.ingest(
+                        device_id=device_id,
+                        sensor_values=[r["value"] for r in payload.get("readings", [])],
+                        timestamp=timestamp,
+                    )
+                    break  # one ingestion per payload
             except Exception as e:
-                logger.error(f"Anomaly callback failed: {e}")
+                print(f"[StreamProcessor] Parse error: {e}")
 
-        return event
+        client.on_connect = on_connect
+        client.on_message = on_message
+        client.tls_set()
+        client.connect(broker, port, keepalive=60)
+        self._running = True
+        client.loop_start()
+        return client
 
-    def get_stats(self) -> Dict[str, Any]:
-        """Get processing statistics."""
-        with self._lock:
-            return {
-                "device_id": self.device_id,
-                "total_processed": self._total_processed,
-                "anomaly_count": self._anomaly_count,
-                "buffer_size": len(self.buffer.buffer),
-                "buffer_ready": self.buffer.is_ready(),
-                "threshold": self.detector.threshold,
-            }
+    def stop(self) -> None:
+        self._running = False
 
-    def reset(self):
-        """Reset processor state."""
-        with self._lock:
-            self.buffer.reset()
-            self._total_processed = 0
-            self._anomaly_count = 0
-            self._last_alert_time = 0.0
-        logger.info("StreamProcessor reset")
-
-
-# ─── CLI Demo ────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    import time
-    import json
+    import sys
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
-    )
+    if len(sys.argv) < 2:
+        print("Usage: python stream_processor.py <model.onnx>")
+        sys.exit(1)
+
+    processor = StreamProcessor(sys.argv[1], window_size=6, cooldown_secs=60)
 
     def on_anomaly(event: AnomalyEvent):
-        print("=" * 60)
-        print(f"ANOMALY EVENT")
-        print(f"  Device:    {event.device_id}")
-        print(f"  Score:     {event.anomaly_score:.4f}")
-        print(f"  Threshold: {event.threshold}")
-        print(f"  Top sensor contribution: {event.sensor_contributions[0] if event.sensor_contributions else 'N/A'}")
-        print("=" * 60)
+        print(f"\n{'='*60}")
+        print(f"  ANOMALY DETECTED — {event.device_id}")
+        print(f"  Score: {event.anomaly_score:.4f} (threshold: {event.threshold:.4f})")
+        print(f"  Time:  {event.timestamp}")
+        print("  Top contributors:")
+        sorted_errors = sorted(event.feature_errors.items(), key=lambda x: x[1], reverse=True)
+        for label, error in sorted_errors[:3]:
+            print(f"    {label}: {error:.4f}")
 
-    # Create processor
-    processor = StreamProcessor(
-        model_path="../models/anomaly.onnx",
-        threshold=0.05,
-        device_id="demo-edge-001",
-        anomaly_callback=on_anomaly,
-        cooldown_seconds=5.0,
-    )
+    processor.on_anomaly(on_anomaly)
+    print("StreamProcessor ready — send test readings via processor.ingest()")
+    print(f"  Window size: {processor.window_size}")
+    print(f"  Threshold:   {processor.detector.threshold}")
 
-    # Simulate streaming data
-    print("Starting streaming demo...")
-    sensor_names = ["vibration", "temperature", "torque", "pressure"]
+    # Example: send a synthetic normal reading
+    normal_reading = [62.0, 5.2, 35.0, 4.5, 150.0, 0.8]
+    result = processor.ingest("test-device-01", normal_reading, time.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    print(f"\nNormal reading result: {result}")
 
-    for i in range(200):
-        # Normal data
-        readings = {
-            name: 50 + 10 * np.sin(i * 0.1 + j) + np.random.randn() * 2
-            for j, name in enumerate(sensor_names)
-        }
-
-        # Inject anomaly every 50 samples
-        if i % 50 == 0 and i > 0:
-            readings["vibration"] += 100  # Spike!
-
-        event = processor.process(readings)
-        if event:
-            print(f"Step {i}: ** ANOMALY ** score={event.anomaly_score:.4f}")
-
-        time.sleep(0.05)
-
-    print(f"\nStats: {json.dumps(processor.get_stats(), indent=2)}")
+    # Example: send a synthetic anomalous reading
+    bad_reading = [85.0, 14.2, 35.0, 4.5, 150.0, 0.8]
+    result = processor.ingest("test-device-01", bad_reading, time.strftime("%Y-%m-%dT%H:%M:%SZ"))
+    print(f"Anomalous reading result: {result}")

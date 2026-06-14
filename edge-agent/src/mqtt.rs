@@ -1,143 +1,119 @@
+//! AMOS Edge Agent — MQTT client with TLS support via rumqttc.
+
 use anyhow::{Context, Result};
-use rumqttc::{AsyncClient, Event, MqttOptions, Packet, Publish, QoS, Transport};
+use chrono::{DateTime, Utc};
+use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, Transport};
 use serde::Serialize;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::Mutex;
-use tokio::task;
-use tracing::{error, info, warn};
+use tracing::{debug, error, info, warn};
 
-/// High-level MQTT client wrapper with reconnection support
+use crate::config::MqttConfig;
+
+#[derive(Debug, Clone, Serialize)]
+pub struct SensorReading {
+    pub timestamp: DateTime<Utc>,
+    #[serde(rename = "device_id")]
+    pub device_id: String,
+    #[serde(rename = "machine_name")]
+    pub machine_name: String,
+    pub location: String,
+    pub readings: Vec<Reading>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Reading {
+    #[serde(rename = "sensor_name")]
+    pub sensor_name: String,
+    pub value: f64,
+    pub unit: String,
+    pub quality: String,
+}
+
+/// MQTT client wrapper with reconnection and message publishing.
 pub struct MqttClient {
     client: AsyncClient,
-    /// Event loop handle — must be polled
-    _event_loop: task::JoinHandle<()>,
-    connected: Arc<Mutex<bool>>,
+    topic_prefix: String,
 }
 
 impl MqttClient {
-    /// Create and connect a new MQTT client
-    pub async fn new(
-        host: &str,
-        port: u16,
-        client_id: &str,
-        username: Option<&str>,
-        password: Option<&str>,
-        use_tls: bool,
-        ca_cert_path: Option<&str>,
-    ) -> Result<Self> {
-        let mut mqtt_options = MqttOptions::new(client_id, host, port);
-        mqtt_options
-            .set_keep_alive(Duration::from_secs(30))
-            .set_clean_session(true);
-
-        if let Some(user) = username {
-            if let Some(pass) = password {
-                mqtt_options.set_credentials(user, pass);
-            }
-        }
+    /// Connect to the MQTT broker with TLS.
+    pub async fn new(config: &MqttConfig) -> Result<Self> {
+        let mut mqttoptions = MqttOptions::new(
+            &config.client_id,
+            &config.host,
+            config.port,
+        );
+        mqttoptions.set_keep_alive(Duration::from_secs(config.keepalive_secs));
 
         // TLS configuration
-        if use_tls {
-            let transport = if let Some(ca_path) = ca_cert_path {
-                let ca = std::fs::read(ca_path)
-                    .context(format!("Failed to read CA certificate from {}", ca_path))?;
-                let ca_cert = rustls_pemfile::certs(&mut ca.as_slice())
-                    .collect::<Result<Vec<_>, _>>()
-                    .context("Failed to parse CA certificate")?;
-                let mut root_store = rustls::RootCertStore::empty();
-                for cert in ca_cert {
-                    root_store.add(cert).context("Failed to add CA cert")?;
-                }
-                let tls_config = rustls::ClientConfig::builder()
-                    .with_root_certificates(root_store)
-                    .with_no_client_auth();
-                Transport::tls_with_config(tls_config.into())
-            } else {
-                // Use webpki-roots for standard CA verification
-                Transport::tls_with_defaults().expect("Failed to configure default TLS");
-            };
-            mqtt_options.set_transport(transport);
+        if config.use_tls {
+            mqttoptions.set_transport(Transport::tls_with_default_config());
+        } else {
+            mqttoptions.set_transport(Transport::clear());
         }
 
-        let (client, mut event_loop) = AsyncClient::new(mqtt_options, 100);
-        let connected = Arc::new(Mutex::new(false));
-        let connected_clone = connected.clone();
+        let (client, mut eventloop) = AsyncClient::new(mqttoptions, 100);
 
-        // Spawn event loop to maintain connection and process events
-        let _event_loop = task::spawn(async move {
+        // Spawn background connection handler with reconnection
+        let host = config.host.clone();
+        let port = config.port;
+        let use_tls = config.use_tls;
+        let client_id = config.client_id.clone();
+        tokio::spawn(async move {
             loop {
-                match event_loop.poll().await {
-                    Ok(Event::Incoming(Packet::ConnAck(_))) => {
-                        info!("MQTT connected successfully");
-                        *connected_clone.lock().await = true;
+                match eventloop.poll().await {
+                    Ok(Event::Incoming(Packet::PingResp)) => {
+                        debug!("MQTT ping response from {}:{}", host, port);
                     }
-                    Ok(Event::Incoming(Packet::Publish(p))) => {
-                        // Handle incoming messages if needed
-                        trace!("Received MQTT message on {}: {:?}", p.topic, p.payload);
+                    Ok(Event::Incoming(Packet::ConnAck(_))) => {
+                        info!("Connected to MQTT broker {}:{}", host, port);
+                    }
+                    Ok(Event::Incoming(i)) => {
+                        debug!("MQTT incoming: {:?}", i);
                     }
                     Ok(Event::Outgoing(_)) => {}
                     Err(e) => {
-                        error!("MQTT event loop error: {:?}", e);
-                        *connected_clone.lock().await = false;
-                        // Reconnect is automatic via rumqttc
+                        error!("MQTT connection error: {}. Reconnecting in 5s...", e);
                         tokio::time::sleep(Duration::from_secs(5)).await;
+                        // Reconnection is automatic via AsyncClient
                     }
-                    _ => {}
                 }
             }
         });
 
-        info!("MQTT client created for {}:{}", host, port);
+        info!(
+            "MQTT client configured: {}:{} (TLS={}, topic_prefix={})",
+            config.host, config.port, config.use_tls, config.topic_prefix
+        );
+
         Ok(Self {
             client,
-            _event_loop,
-            connected,
+            topic_prefix: config.topic_prefix.clone(),
         })
     }
 
-    /// Publish a message to a topic with QoS 1 (at least once)
-    pub async fn publish(&self, topic: &str, payload: &str) -> Result<()> {
+    /// Publish sensor telemetry to the cloud.
+    pub async fn publish_reading(&self, reading: &SensorReading) -> Result<()> {
+        let topic = format!("{}/telemetry", self.topic_prefix);
+        let payload = serde_json::to_string(reading)
+            .context("serialize sensor reading")?;
+
         self.client
-            .publish(topic, QoS::AtLeastOnce, false, payload.as_bytes())
+            .publish(&topic, QoS::AtLeastOnce, false, payload.as_bytes())
             .await
-            .context(format!("Failed to publish to topic {}", topic))?;
-        Ok(())
+            .context("mqtt publish")
+            .map_err(Into::into)
     }
 
-    /// Publish a serializable struct as JSON
-    pub async fn publish_json<T: Serialize>(
-        &self,
-        topic: &str,
-        data: &T,
-    ) -> Result<()> {
-        let payload = serde_json::to_string(data)
-            .context("Failed to serialize payload")?;
-        self.publish(topic, &payload).await
-    }
-
-    /// Subscribe to a topic with QoS 1
-    pub async fn subscribe(&self, topic: &str) -> Result<()> {
+    /// Publish a raw JSON payload to a topic.
+    pub async fn publish(&self, topic_suffix: &str, payload: &str) -> Result<()> {
+        let topic = format!("{}/{}", self.topic_prefix, topic_suffix);
         self.client
-            .subscribe(topic, QoS::AtLeastOnce)
+            .publish(&topic, QoS::AtLeastOnce, false, payload.as_bytes())
             .await
-            .context(format!("Failed to subscribe to {}", topic))?;
-        info!("Subscribed to MQTT topic: {}", topic);
-        Ok(())
-    }
-
-    /// Check if the client is currently connected
-    pub async fn is_connected(&self) -> bool {
-        *self.connected.lock().await
-    }
-
-    /// Disconnect cleanly (graceful shutdown)
-    pub async fn disconnect(&self) -> Result<()> {
-        self.client
-            .disconnect()
-            .await
-            .context("Failed to disconnect MQTT")?;
-        info!("MQTT disconnected");
-        Ok(())
+            .context("mqtt publish")
+            .map_err(Into::into)
     }
 }

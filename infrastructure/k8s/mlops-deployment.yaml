@@ -1,0 +1,30 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: mlops-service
+  namespace: amos
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: mlops-service
+  template:
+    metadata:
+      labels:
+        app: mlops-service
+    spec:
+      containers:
+        - name: mlops-service
+          image: amos/mlops-service:latest
+          ports:
+            - containerPort: 8000
+          volumeMounts:
+            - name: model-store
+              mountPath: /opt/amos/models
+          resources:
+            requests: { cpu: "500m", memory: "1Gi" }
+            limits: { cpu: "2000m", memory: "4Gi" }
+      volumes:
+        - name: model-store
+          persistentVolumeClaim:
+            claimName: model-store-pvc

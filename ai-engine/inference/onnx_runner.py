@@ -5,250 +5,202 @@ Wraps ONNX Runtime session for autoencoder-based anomaly detection.
 
 Usage:
     runner = AnomalyDetector("models/anomaly.onnx")
-    result = runner.predict(sensor_vector)
-    print(result["anomaly_score"], result["is_anomaly"])
+    result = runner.detect([52.3, 65.2, 42.1, 38.9, 55.6, 61.0])
+    print(result)  # {'anomaly_score': 0.023, 'is_anomaly': False, ...}
 """
 
-import logging
-from pathlib import Path
-from typing import Optional, List, Dict, Any
+import argparse
+import time
+from dataclasses import dataclass
+from typing import List, Optional
 
 import numpy as np
+import onnxruntime as ort
 
-logger = logging.getLogger("amos-inference-runner")
+
+@dataclass
+class AnomalyResult:
+    anomaly_score: float
+    is_anomaly: bool
+    threshold: float
+    feature_errors: List[float]
+    model_name: str
+    execution_time_ms: float
 
 
 class AnomalyDetector:
-    """ONNX Runtime wrapper for autoencoder anomaly detection."""
+    """
+    Loads an ONNX autoencoder and runs anomaly detection on sensor windows.
+
+    The autoencoder is trained on normal operational data. During inference,
+    a high reconstruction error signals that the input pattern deviates from
+    learned normal behavior — indicating a potential fault or anomaly.
+    """
 
     def __init__(
         self,
         model_path: str,
         threshold: float = 0.05,
-        input_size: int = 16,
-        provider: str = "CPUExecutionProvider",
+        model_name: str = "anomaly_detector",
+        providers: Optional[List[str]] = None,
     ):
-        self.model_path = Path(model_path)
+        self.model_name = model_name
         self.threshold = threshold
-        self.input_size = input_size
-        self.provider = provider
-        self.session = None
-        self.input_name = None
-        self.output_name = None
 
-        # Validate model exists
-        if not self.model_path.exists():
-            raise FileNotFoundError(f"ONNX model not found: {model_path}")
+        if providers is None:
+            providers = ["CPUExecutionProvider"]
 
-        self._load_model()
-
-    def _load_model(self):
-        """Load the ONNX model and create inference session."""
-        import onnxruntime as ort
-
-        # Check for available providers
-        available = ort.get_available_providers()
-        logger.info(f"Available ONNX providers: {available}")
-
-        if self.provider not in available:
-            logger.warning(
-                f"Provider '{self.provider}' not available, falling back to CPU"
-            )
-            self.provider = "CPUExecutionProvider"
-
-        # Create session with optimizations
         sess_options = ort.SessionOptions()
-        sess_options.enable_cpu_mem_arena = True
-        sess_options.enable_mem_reuse = True
         sess_options.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-        self.session = ort.InferenceSession(
-            str(self.model_path),
-            sess_options=sess_options,
-            providers=[self.provider],
-        )
+        self.session = ort.InferenceSession(model_path, sess_options, providers=providers)
 
-        self.input_name = self.session.get_inputs()[0].name
-        self.output_name = self.session.get_outputs()[0].name
-        actual_input_size = self.session.get_inputs()[0].shape[1]
+        # Verify input shape
+        inputs = self.session.get_inputs()
+        assert len(inputs) == 1, f"Expected 1 input, got {len(inputs)}"
+        self.input_name = inputs[0].name
+        self.input_dim = inputs[0].shape[-1]
 
-        if actual_input_size and actual_input_size != self.input_size:
-            logger.warning(
-                f"Model expects input size {actual_input_size}, "
-                f"but configured for {self.input_size}. Using model's size."
-            )
-            self.input_size = actual_input_size
+        # Outputs: [0] = reconstruction, [1] = latent (optional)
+        outputs = self.session.get_outputs()
+        self.output_name = outputs[0].name
 
-        logger.info(
-            f"Model loaded: {self.model_path.name} | "
-            f"Input: {self.input_name}({self.input_size}) | "
-            f"Output: {self.output_name} | "
-            f"Provider: {self.provider}"
-        )
+        print(f"[AnomalyDetector] Loaded: {model_path}")
+        print(f"  Input: {self.input_name} — dim={self.input_dim}")
+        print(f"  Output: {self.output_name}")
+        print(f"  Threshold: {threshold}")
 
-    def predict(self, input_vector: List[float]) -> Dict[str, Any]:
-        """Run inference on a single sensor vector.
+    def detect(self, values: List[float]) -> AnomalyResult:
+        """
+        Run anomaly detection on a single sensor window.
 
         Args:
-            input_vector: List of sensor readings (length must match input_size)
+            values: List of sensor readings (must match input_dim)
 
         Returns:
-            Dict with keys: anomaly_score, is_anomaly, reconstruction,
-                           sensor_contributions
+            AnomalyResult with score, flag, and per-feature reconstruction errors
         """
-        if self.session is None:
-            raise RuntimeError("Model not loaded. Call _load_model() first.")
+        if len(values) != self.input_dim:
+            raise ValueError(f"Expected {self.input_dim} values, got {len(values)}")
 
-        # Validate input
-        arr = np.array(input_vector, dtype=np.float32)
-        if arr.ndim == 1:
-            arr = arr.reshape(1, -1)
+        start = time.perf_counter()
+        input_data = np.array(values, dtype=np.float32).reshape(1, -1)
 
-        if arr.shape[1] != self.input_size:
-            raise ValueError(
-                f"Expected input size {self.input_size}, got {arr.shape[1]}"
-            )
-
-        # Run inference
         outputs = self.session.run(
-            [self.output_name], {self.input_name: arr}
+            [self.output_name],
+            {self.input_name: input_data}
         )
-        reconstruction = outputs[0][0]
+        reconstruction = outputs[0].flatten()
 
-        # Calculate reconstruction error
-        original = arr[0]
-        errors = (original - reconstruction) ** 2
-        mse = float(np.mean(errors))
+        exec_ms = (time.perf_counter() - start) * 1000
 
-        # Determine anomaly status
-        is_anomaly = mse > self.threshold
+        # Per-feature reconstruction error
+        inputs_arr = np.array(values, dtype=np.float32)
+        feature_errors = np.abs(inputs_arr - reconstruction).tolist()
 
-        # Per-sensor contributions (for explainability)
-        total_error = float(np.sum(errors))
-        sensor_contributions = []
-        for i in range(self.input_size):
-            contribution_pct = (errors[i] / total_error * 100) if total_error > 0 else 0
-            sensor_contributions.append({
-                "sensor_index": i,
-                "original_value": float(original[i]),
-                "reconstructed_value": float(reconstruction[i]),
-                "error": float(errors[i]),
-                "contribution_pct": float(contribution_pct),
-            })
+        # Overall score = mean reconstruction error
+        anomaly_score = float(np.mean(feature_errors))
+        is_anomaly = anomaly_score > self.threshold
 
-        # Sort by contribution (most anomalous sensor first)
-        sensor_contributions.sort(key=lambda x: x["error"], reverse=True)
+        return AnomalyResult(
+            anomaly_score=anomaly_score,
+            is_anomaly=is_anomaly,
+            threshold=self.threshold,
+            feature_errors=feature_errors,
+            model_name=self.model_name,
+            execution_time_ms=exec_ms,
+        )
 
-        return {
-            "anomaly_score": mse,
-            "is_anomaly": is_anomaly,
-            "threshold": self.threshold,
-            "reconstruction": reconstruction.tolist(),
-            "sensor_contributions": sensor_contributions,
-            "top_sensor": sensor_contributions[0] if sensor_contributions else None,
-        }
-
-    def predict_batch(self, input_vectors: List[List[float]]) -> List[Dict[str, Any]]:
-        """Run inference on a batch of sensor vectors.
-
-        Args:
-            input_vectors: List of sensor vectors
-
-        Returns:
-            List of prediction dicts
-        """
-        if not input_vectors:
+    def detect_batch(self, batch: List[List[float]]) -> List[AnomalyResult]:
+        """Run detection on multiple windows (batched inference)."""
+        if not batch:
             return []
+        n = len(batch)
+        inputs = np.array(batch, dtype=np.float32)
 
-        batch = np.array(input_vectors, dtype=np.float32)
-        if batch.ndim == 1:
-            batch = batch.reshape(1, -1)
-
-        if batch.shape[1] != self.input_size:
-            raise ValueError(
-                f"Expected input size {self.input_size}, got {batch.shape[1]}"
-            )
-
+        start = time.perf_counter()
         outputs = self.session.run(
-            [self.output_name], {self.input_name: batch}
+            [self.output_name],
+            {self.input_name: inputs}
         )
-        reconstructions = outputs[0]
+        reconstructions = outputs[0]  # shape: (batch, input_dim)
+        exec_ms = (time.perf_counter() - start) * 1000
 
         results = []
-        for i in range(len(input_vectors)):
-            original = batch[i]
-            reconstruction = reconstructions[i]
-            errors = (original - reconstruction) ** 2
-            mse = float(np.mean(errors))
-            is_anomaly = mse > self.threshold
-
-            results.append({
-                "anomaly_score": mse,
-                "is_anomaly": is_anomaly,
-                "threshold": self.threshold,
-                "reconstruction": reconstruction.tolist(),
-            })
-
+        for i in range(n):
+            inputs_i = inputs[i]
+            recon_i = reconstructions[i]
+            feature_errors = np.abs(inputs_i - recon_i).tolist()
+            anomaly_score = float(np.mean(feature_errors))
+            results.append(AnomalyResult(
+                anomaly_score=anomaly_score,
+                is_anomaly=anomaly_score > self.threshold,
+                threshold=self.threshold,
+                feature_errors=feature_errors,
+                model_name=self.model_name,
+                execution_time_ms=exec_ms / n,
+            ))
         return results
 
-    def explain(self, input_vector: List[float]) -> Dict[str, Any]:
-        """Get anomaly explanation with per-sensor contributions.
+    def top_contributors(self, result: AnomalyResult, n: int = 3) -> List[tuple]:
+        """Return the top N sensors contributing to the anomaly score."""
+        indexed = list(enumerate(result.feature_errors))
+        indexed.sort(key=lambda x: x[1], reverse=True)
+        return indexed[:n]
 
-        Args:
-            input_vector: Sensor readings vector
-
-        Returns:
-            Dict with explanation details including the top contributing sensors
-        """
-        result = self.predict(input_vector)
-        return {
-            "anomaly_score": result["anomaly_score"],
-            "is_anomaly": result["is_anomaly"],
-            "threshold": self.threshold,
-            "top_contributors": result["sensor_contributions"][:5],
-            "all_contributors": result["sensor_contributions"],
-        }
-
-    def update_threshold(self, new_threshold: float):
-        """Update the anomaly detection threshold."""
-        old = self.threshold
-        self.threshold = new_threshold
-        logger.info(f"Threshold updated: {old:.4f} -> {new_threshold:.4f}")
+    def __repr__(self) -> str:
+        return f"AnomalyDetector(model={self.model_name}, dim={self.input_dim}, threshold={self.threshold})"
 
 
-# ─── CLI Usage ───────────────────────────────────────────────
+SENSOR_LABELS = [
+    "Spindle_Temperature",
+    "Spindle_Vibration",
+    "Spindle_Torque",
+    "Coolant_Flow",
+    "Cutting_Speed",
+    "Feed_Rate",
+]
 
-if __name__ == "__main__":
-    import argparse
-    import json
 
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s",
+def main():
+    parser = argparse.ArgumentParser(description="AMOS ONNX Runtime inference runner")
+    parser.add_argument("--model", required=True, help="Path to .onnx model file")
+    parser.add_argument("--threshold", type=float, default=0.05, help="Anomaly threshold (MSE)")
+    parser.add_argument(
+        "--input",
+        type=float,
+        nargs="+",
+        help="Space-separated sensor values for a single detection",
     )
-
-    parser = argparse.ArgumentParser(description="AMOS ONNX Inference Runner")
-    parser.add_argument("--model", type=str, default="../models/anomaly.onnx",
-                        help="Path to ONNX model")
-    parser.add_argument("--input", type=str, nargs="+", required=True,
-                        help="Sensor values (space-separated floats)")
-    parser.add_argument("--threshold", type=float, default=0.05,
-                        help="Anomaly threshold")
-    parser.add_argument("--explain", action="store_true",
-                        help="Show per-sensor explanation")
-
     args = parser.parse_args()
 
-    detector = AnomalyDetector(
-        model_path=args.model,
-        threshold=args.threshold,
-    )
+    detector = AnomalyDetector(args.model, threshold=args.threshold)
 
-    input_data = [float(x) for x in args.input]
-
-    if args.explain:
-        result = detector.explain(input_data)
+    if args.input:
+        result = detector.detect(args.input)
+        print(f"\nInput: {args.input}")
+        print(f"Anomaly Score: {result.anomaly_score:.4f} (threshold={result.threshold:.4f})")
+        print(f"Is Anomaly: {result.is_anomaly}")
+        print(f"Execution: {result.execution_time_ms:.2f}ms")
+        print("\nPer-sensor reconstruction errors:")
+        for label, error in zip(SENSOR_LABELS, result.feature_errors):
+            bar = "█" * min(int(error * 50), 40)
+            print(f"  {label:22s} {error:.4f}  {bar}")
     else:
-        result = detector.predict(input_data)
+        # Demo: run on synthetic normal and anomalous data
+        print("\n=== Demo: Normal Data ===")
+        normal = [62.0, 5.2, 35.0, 4.5, 150.0, 0.8]
+        result = detector.detect(normal)
+        print(f"  Score: {result.anomaly_score:.4f}, Anomaly: {result.is_anomaly}")
 
-    print(json.dumps(result, indent=2))
+        print("\n=== Demo: Anomalous Data (high vibration + temp) ===")
+        anomaly = [82.0, 12.3, 35.0, 4.5, 150.0, 0.8]
+        result = detector.detect(anomaly)
+        print(f"  Score: {result.anomaly_score:.4f}, Anomaly: {result.is_anomaly}")
+        print("  Top contributors:")
+        for label, error in detector.top_contributors(result, n=3):
+            print(f"    {label}: {error:.4f}")
+
+
+if __name__ == "__main__":
+    main()

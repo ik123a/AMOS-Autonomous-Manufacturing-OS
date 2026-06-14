@@ -2,7 +2,9 @@
 name = "amos-edge-agent"
 version = "0.1.0"
 edition = "2021"
-description = "AMOS Edge Agent - Industrial IoT data ingestion and ML inference"
+authors = ["AMOS Team <team@amos-platform.io>"]
+description = "AMOS Edge Agent — industrial data collection, inference, and MQTT streaming"
+rust-version = "1.76"
 
 [dependencies]
 # Async runtime
