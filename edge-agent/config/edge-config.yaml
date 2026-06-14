@@ -1,0 +1,99 @@
+# AMOS Edge Agent Configuration
+# This file configures the edge device that connects to factory PLCs
+
+device_id: "edge-plant1-001"
+machine_name: "CNC-Machine-04"
+location: "Building-A-Line-3"
+
+# Data collection settings
+collection_interval_ms: 100  # 100ms = 10Hz sampling
+heartbeat_interval_secs: 30
+
+# MQTT Broker Connection
+mqtt:
+  host: "mqtt.amos-platform.io"
+  port: 8883
+  client_id: "amos-edge-plant1-001"
+  username: "edge-device"
+  password: "${MQTT_PASSWORD}"  # Use env var in production
+  ca_cert_path: "/etc/amos/certs/ca.pem"
+  use_tls: true
+  topic_prefix: "amos"
+
+# OPC-UA Server Connection
+opcua:
+  endpoint: "opc.tcp://192.168.1.100:4840"
+  application_name: "AMOS-Edge-Agent"
+  security_policy: "Basic256Sha256"
+  auth_mode: "Username"
+  username: "${OPCUA_USERNAME}"
+  password: "${OPCUA_PASSWORD}"
+  reconnect_delay_secs: 5
+
+  # Sensor nodes to monitor
+  monitored_nodes:
+    - node_id: "ns=2;i=1001"
+      display_name: "Spindle_Vibration"
+      unit: "mm/s"
+      warning_high: 7.5
+      critical_high: 11.2
+
+    - node_id: "ns=2;i=1002"
+      display_name: "Spindle_Temperature"
+      unit: "°C"
+      warning_high: 65.0
+      critical_high: 85.0
+
+    - node_id: "ns=2;i=1003"
+      display_name: "Motor_Torque"
+      unit: "Nm"
+      warning_high: 45.0
+      critical_high: 60.0
+
+    - node_id: "ns=2;i=1004"
+      display_name: "Cycle_Time"
+      unit: "s"
+      warning_high: 18.0
+      critical_high: 25.0
+
+    - node_id: "ns=2;i=1005"
+      display_name: "Coolant_Flow"
+      unit: "L/min"
+      warning_low: 3.0
+      critical_low: 1.5
+
+    - node_id: "ns=2;i=1006"
+      display_name: "Current_Draw"
+      unit: "A"
+      warning_high: 30.0
+      critical_high: 40.0
+
+# Modbus-TCP (optional - add if PLC 2 supports Modbus)
+modbus:
+  host: "192.168.1.101"
+  port: 502
+  slave_id: 1
+  registers:
+    - address: 0
+      quantity: 2
+      name: "Temperature_Zone_1"
+      scale: 0.1
+      unit: "°C"
+    - address: 2
+      quantity: 2
+      name: "Pressure_Zone_1"
+      scale: 0.01
+      unit: "bar"
+    - address: 4
+      quantity: 1
+      name: "Speed_RPM"
+      scale: 1.0
+      unit: "RPM"
+
+# ML Inference Configuration
+inference:
+  enabled: true
+  model_path: "/opt/amos/models/anomaly.onnx"
+  anomaly_threshold: 0.05
+  input_size: 16
+  buffer_size: 100

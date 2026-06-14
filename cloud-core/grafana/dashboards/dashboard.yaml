@@ -1,0 +1,11 @@
+apiVersion: 1
+
+providers:
+  - name: "AMOS Default"
+    orgId: 1
+    folder: "AMOS"
+    type: file
+    disableDeletion: false
+    editable: true
+    options:
+      path: /etc/grafana/provisioning/dashboards

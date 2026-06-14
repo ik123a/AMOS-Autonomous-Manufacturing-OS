@@ -1,0 +1,134 @@
+# AMOS Cloud Core - Docker Compose
+# Spins up the full cloud backend for local development
+
+version: "3.8"
+
+networks:
+  amos-net:
+    driver: bridge
+
+volumes:
+  zookeeper_data:
+  kafka_data:
+  influxdb_data:
+  grafana_data:
+
+services:
+  # ─── Message Broker ───────────────────────────────────────────
+  zookeeper:
+    image: bitnami/zookeeper:3.9
+    networks:
+      - amos-net
+    volumes:
+      - zookeeper_data:/bitnami
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+
+  kafka:
+    image: bitnami/kafka:3.6
+    networks:
+      - amos-net
+    volumes:
+      - kafka_data:/bitnami
+    ports:
+      - "9092:9092"
+    environment:
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092
+      - KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE=true
+      - ALLOW_PLAINTEXT_LISTENER=yes
+    depends_on:
+      - zookeeper
+
+  # ─── Time-Series Database ────────────────────────────────────
+  influxdb:
+    image: influxdb:2.7
+    networks:
+      - amos-net
+    ports:
+      - "8086:8086"
+    volumes:
+      - influxdb_data:/var/lib/influxdb2
+    environment:
+      - DOCKER_INFLUXDB_INIT_MODE=setup
+      - DOCKER_INFLUXDB_INIT_USERNAME=admin
+      - DOCKER_INFLUXDB_INIT_PASSWORD=amos_admin_2024
+      - DOCKER_INFLUXDB_INIT_ORG=amos
+      - DOCKER_INFLUXDB_INIT_BUCKET=amos_telemetry
+      - DOCKER_INFLUXDB_INIT_RETENTION=90d
+
+  # ─── Grafana Dashboard ───────────────────────────────────────
+  grafana:
+    image: grafana/grafana-oss:latest
+    networks:
+      - amos-net
+    ports:
+      - "3000:3000"
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/dashboards:/etc/grafana/provisioning/dashboards
+      - ./grafana/datasources:/etc/grafana/provisioning/datasources
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=amos_admin_2024
+      - GF_INSTALL_PLUGINS=influxdb-flightsql-datasource
+
+  # ─── Microservices ───────────────────────────────────────────
+  ingestion-service:
+    build: ./ingestion-service
+    networks:
+      - amos-net
+    ports:
+      - "8001:8000"
+    environment:
+      - SERVICE_NAME=ingestion-service
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=amos_admin_2024
+      - INFLUXDB_ORG=amos
+      - INFLUXDB_BUCKET=amos_telemetry
+    depends_on:
+      - kafka
+      - influxdb
+
+  tsdb-service:
+    build: ./tsdb-service
+    networks:
+      - amos-net
+    ports:
+      - "8002:8000"
+    environment:
+      - SERVICE_NAME=tsdb-service
+      - INFLUXDB_URL=http://influxdb:8086
+      - INFLUXDB_TOKEN=amos_admin_2024
+      - INFLUXDB_ORG=amos
+      - INFLUXDB_BUCKET=amos_telemetry
+    depends_on:
+      - influxdb
+
+  alert-service:
+    build: ./alert-service
+    networks:
+      - amos-net
+    ports:
+      - "8003:8000"
+    environment:
+      - SERVICE_NAME=alert-service
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+      - SLACK_WEBHOOK_URL=
+    depends_on:
+      - kafka
+
+  mlops-service:
+    build: ./mlops-service
+    networks:
+      - amos-net
+    ports:
+      - "8004:8000"
+    environment:
+      - SERVICE_NAME=mlops-service
+      - MODEL_STORE_PATH=/opt/amos/models
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    depends_on: []
+    volumes:
+      - ./models:/opt/amos/models

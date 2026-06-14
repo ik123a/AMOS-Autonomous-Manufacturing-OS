@@ -1,0 +1,51 @@
+[package]
+name = "amos-edge-agent"
+version = "0.1.0"
+edition = "2021"
+description = "AMOS Edge Agent - Industrial IoT data ingestion and ML inference"
+
+[dependencies]
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+async-trait = "0.1"
+
+# OPC-UA (lightweight open62541 bindings - simplified for cross-compilation)
+opcua = "0.10"
+
+# Modbus TCP
+tokio-modbus = "0.9"
+
+# MQTT
+rumqttc = "0.24"
+
+# Serialization
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serde_yaml = "0.9"
+
+# Config
+config = "0.14"
+
+# Logging
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Error handling
+anyhow = "1"
+thiserror = "1"
+
+# Time & scheduling
+chrono = { version = "0.4", features = ["serde"] }
+tokio-cron-scheduler = "0.10"
+
+# System info
+sysinfo = "0.30"
+
+# ML inference
+ort = "2.0"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
