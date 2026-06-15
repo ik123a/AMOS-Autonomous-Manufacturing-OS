@@ -1,2 +1,2 @@
-pub mod opcua;
 pub mod modbus;
+pub mod opcua;

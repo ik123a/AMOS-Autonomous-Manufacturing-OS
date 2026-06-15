@@ -103,10 +103,12 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
+          cache: 'npm'
+          cache-dependency-path: dashboard/package-lock.json
       - name: Install dependencies
         run: |
           cd dashboard
-          npm install --legacy-peer-deps
+          npm ci --legacy-peer-deps
       - name: TypeScript check
         run: cd dashboard && npx tsc --noEmit
       - name: Build dashboard

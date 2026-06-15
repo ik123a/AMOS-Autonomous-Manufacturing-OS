@@ -235,8 +235,8 @@ impl EdgeConfig {
     pub fn from_file(path: impl AsRef<Path>) -> Result<Self> {
         let content = std::fs::read_to_string(path.as_ref())
             .context(format!("Failed to read config from {:?}", path.as_ref()))?;
-        let config: EdgeConfig = serde_yaml::from_str(&content)
-            .context("Failed to parse configuration YAML")?;
+        let config: EdgeConfig =
+            serde_yaml::from_str(&content).context("Failed to parse configuration YAML")?;
         Ok(config)
     }
 
@@ -280,7 +280,9 @@ mod tests {
     #[test]
     fn test_default_topic_generation() {
         let config = EdgeConfig {
-            logging: LoggingConfig { level: "info".to_string() },
+            logging: LoggingConfig {
+                level: "info".to_string(),
+            },
             device_id: "test-device-01".to_string(),
             machine_name: None,
             location: None,

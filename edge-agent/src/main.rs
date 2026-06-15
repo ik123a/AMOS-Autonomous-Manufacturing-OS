@@ -1,8 +1,8 @@
-pub mod config;
-pub mod mqtt;
 pub mod collectors;
-pub mod inference;
+pub mod config;
 pub mod health;
+pub mod inference;
+pub mod mqtt;
 
 use anyhow::Result;
 use clap::Parser;
@@ -28,7 +28,11 @@ async fn main() -> Result<()> {
     // Init logging
     init_tracing(&config.logging.level);
     info!("AMOS Edge Agent v{} starting up...", VERSION);
-    info!("Device: {} @ {}", config.device_id, config.location.as_deref().unwrap_or("unknown"));
+    info!(
+        "Device: {} @ {}",
+        config.device_id,
+        config.location.as_deref().unwrap_or("unknown")
+    );
 
     // Shared state (reserved for future per-device state)
     let _shared = Arc::new(());
@@ -102,7 +106,9 @@ async fn main() -> Result<()> {
 
     // Cancel all tasks
     let _ = opcua_handle.abort();
-    if let Some(h) = modbus_handle { let _ = h.abort(); }
+    if let Some(h) = modbus_handle {
+        let _ = h.abort();
+    }
     let _ = health_handle.abort();
 
     info!("AMOS Edge Agent v{} stopped cleanly", VERSION);
@@ -110,8 +116,7 @@ async fn main() -> Result<()> {
 }
 
 fn init_tracing(level: &str) {
-    let filter = EnvFilter::try_from_default_env()
-        .unwrap_or_else(|_| EnvFilter::new(level));
+    let filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new(level));
     tracing_subscriber::registry()
         .with(filter)
         .with(tracing_subscriber::fmt::layer().with_target(true))

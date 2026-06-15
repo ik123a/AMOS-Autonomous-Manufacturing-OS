@@ -28,11 +28,7 @@ pub struct ModbusCollector {
 }
 
 impl ModbusCollector {
-    pub fn new(
-        config: ModbusConfig,
-        device_id: String,
-        mqtt_client: Arc<MqttClient>,
-    ) -> Self {
+    pub fn new(config: ModbusConfig, device_id: String, mqtt_client: Arc<MqttClient>) -> Self {
         Self {
             config: Arc::new(config),
             device_id,
@@ -62,11 +58,7 @@ impl ModbusCollector {
                         let payload = serde_json::to_string(&readings)
                             .context("Failed to serialize Modbus readings")?;
 
-                        let topic = format!(
-                            "{}/{}/modbus",
-                            "amos",
-                            self.device_id
-                        );
+                        let topic = format!("{}/{}/modbus", "amos", self.device_id);
 
                         if let Err(e) = self.mqtt_client.publish(&topic, &payload).await {
                             warn!("Failed to publish Modbus readings: {}", e);
@@ -97,7 +89,7 @@ impl ModbusCollector {
                 timestamp: now.clone(),
                 device_id: self.device_id.clone(),
                 register_name: reg.name.clone(),
-                raw_value: 0, // Real value from Modbus read
+                raw_value: 0,      // Real value from Modbus read
                 scaled_value: 0.0, // raw_value * reg.scale
                 unit: reg.unit.clone(),
                 slave_id: self.config.slave_id,

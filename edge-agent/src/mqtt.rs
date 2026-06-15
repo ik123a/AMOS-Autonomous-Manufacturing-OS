@@ -40,11 +40,7 @@ pub struct MqttClient {
 impl MqttClient {
     /// Connect to the MQTT broker with TLS.
     pub async fn new(config: &MqttConfig) -> Result<Self> {
-        let mut mqttoptions = MqttOptions::new(
-            &config.client_id,
-            &config.host,
-            config.port,
-        );
+        let mut mqttoptions = MqttOptions::new(&config.client_id, &config.host, config.port);
         mqttoptions.set_keep_alive(Duration::from_secs(config.keepalive_secs));
 
         // TLS configuration
@@ -97,8 +93,7 @@ impl MqttClient {
     /// Publish sensor telemetry to the cloud.
     pub async fn publish_reading(&self, reading: &SensorReading) -> Result<()> {
         let topic = format!("{}/telemetry", self.topic_prefix);
-        let payload = serde_json::to_string(reading)
-            .context("serialize sensor reading")?;
+        let payload = serde_json::to_string(reading).context("serialize sensor reading")?;
 
         self.client
             .publish(&topic, QoS::AtLeastOnce, false, payload.as_bytes())
