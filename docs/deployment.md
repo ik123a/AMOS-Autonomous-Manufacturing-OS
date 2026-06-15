@@ -1,338 +1,354 @@
 # AMOS Deployment Guide
 
-This guide covers deploying AMOS from local development all the way through to production Kubernetes.
+This guide covers deploying AMOS from development to production.
 
 ---
 
-## Prerequisites
+## 1. Local Development
 
-| Component | Version | Notes |
-|-----------|---------|-------|
-| Docker | 24+ | Required for local cloud stack |
-| Docker Compose | 2.20+ | V2 syntax (docker compose, not docker-compose) |
-| Python | 3.11+ | For cloud services |
-| Node.js | 20+ | For dashboard |
-| Rust | 1.76+ | For edge agent |
-| kubectl | 1.28+ | For K8s deployments |
-| Kubernetes | 1.28+ | For production |
+### Prerequisites
+- Docker & Docker Compose
+- Python 3.11+
+- Node.js 20+
+- Rust 1.76+ (for edge agent development)
 
----
-
-## Local Development (Docker Compose)
-
-Best for local testing of the full cloud stack.
+### Start the cloud stack
 
 ```bash
 cd cloud-core
 
+# Create required directories
+mkdir -p models kafka-data influxdb-data grafana-data mlflow-data
+
 # Start all services
-docker compose up -d
+docker-compose up -d
 
-# Watch logs
-docker compose logs -f
-
-# Verify all services are up
-docker compose ps
-
-# Services and their ports:
-#   ingestion-service :8001
-#   tsdb-service     :8002
-#   alert-service    :8003
-#   mlops-service    :8004
-#   Kafka            :9092
-#   InfluxDB         :8086
-#   MLflow           :5000
-#   Grafana          :3000 (admin/amos_admin_2024)
-
-# Stop everything
-docker compose down
+# Verify all services are healthy
+docker-compose ps
 ```
 
-### Dashboard (React)
+Services available:
+| Service | URL | Credentials |
+|---------|-----|-------------|
+| Dashboard | http://localhost:5173 | — |
+| Alert API | http://localhost:8003 | — |
+| TSDB API | http://localhost:8002 | — |
+| Ingestion API | http://localhost:8001 | — |
+| MLOps API | http://localhost:8004 | — |
+| Grafana | http://localhost:3000 | admin / amos_admin_2024 |
+| Kafka UI | http://localhost:8080 | — |
+| MLflow | http://localhost:5000 | — |
+
+### Start the dashboard
 
 ```bash
 cd dashboard
-npm install
-npm run dev      # → http://localhost:5173
+npm install --legacy-peer-deps
+npm run dev
+# Dashboard → http://localhost:5173
 ```
 
-### Edge Agent (Rust)
+### Build and run the edge agent
 
 ```bash
 cd edge-agent
 
-# Build
+# Build the release binary
 cargo build --release
-# Binary → target/release/amos-edge-agent
 
-# Run (pointing at local cloud stack)
+# Run (point at local cloud stack)
 ./target/release/amos-edge-agent \
   --config config/edge-config.yaml
 ```
 
-The edge agent expects:
-- MQTT broker at `192.168.1.100:1883` (configurable in `config/edge-config.yaml`)
-- An ONNX model at `/opt/amos/models/anomaly.onnx` (train one first with `ai-engine/`)
+### Simulate sensor data (no real PLC needed)
 
-### Training a Model (Local)
+The edge agent's OPC-UA collector works in simulation mode when no PLC is present. You can also use the included script to generate synthetic telemetry directly to the cloud:
 
 ```bash
-cd ai-engine
-
-# Install dependencies
-pip install -r requirements.txt
-
-# Train an autoencoder on sample data
-python training/train_autoencoder.py \
-  --data ./data/sample_sensor_data.csv \
-  --epochs 100 \
-  --output ./models/anomaly.onnx
-
-# Verify the model
-python inference/onnx_runner.py \
-  --model ./models/anomaly.onnx
+# From cloud-core/ directory
+python3 scripts/simulate_sensor_data.py --device edge-plant1-001 --duration 3600
 ```
 
 ---
 
-## Production Deployment (Kubernetes)
+## 2. Edge Device Setup
 
-### Cluster Requirements
+Recommended hardware: **Advantech UNO-2271G V3**
+- Intel Atom x7211RE (2 cores, 2.0 GHz)
+- 8GB RAM, 64GB SSD
+- Dual GbE LAN (one for PLC network, one for plant network)
+- Fanless, DIN-rail mountable
 
-- Kubernetes 1.28+ with `kubectl` configured
-- At least 3 worker nodes (4+ CPU, 16GB RAM each recommended)
-- `kubectl` context set to the target cluster
+### Flashing the edge device
 
-### Step 1 — Apply Kubernetes Manifests
+1. Flash Ubuntu Server 22.04 LTS to a USB stick
+2. Connect to management network, install:
+   ```bash
+   curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+   apt-get install -y nodejs docker.io docker-compose
+   usermod -aG docker amos
+   ```
+
+3. Copy the edge agent binary:
+   ```bash
+   # Copy from your build machine
+   scp amos-edge-agent amos@edge-device:/usr/local/bin/
+   ssh amos@edge-device "chmod +x /usr/local/bin/amos-edge-agent"
+
+   # Copy config (never commit this to git)
+   scp edge-config.yaml amos@edge-device:/etc/amos/edge-config.yaml
+   ```
+
+4. Set up as a systemd service:
+   ```bash
+   sudo tee /etc/systemd/system/amos-edge-agent.service <<'EOF'
+   [Unit]
+   Description=AMOS Edge Agent
+   After=network.target docker.service
+
+   [Service]
+   Type=simple
+   User=amos
+   ExecStart=/usr/local/bin/amos-edge-agent --config /etc/amos/edge-config.yaml
+   Restart=always
+   RestartSec=10
+   StandardOutput=journal
+   StandardError=journal
+
+   [Install]
+   WantedBy=multi-user.target
+   EOF
+
+   sudo systemctl enable amos-edge-agent
+   sudo systemctl start amos-edge-agent
+   sudo systemctl status amos-edge-agent
+   ```
+
+5. Verify it's running:
+   ```bash
+   journalctl -u amos-edge-agent -f
+   # Should see: "AMOS Edge Agent v0.1.0 starting up..."
+   ```
+
+### Network configuration
+
+The edge device needs:
+- Port 8883 (MQTT over TLS) outbound to cloud broker
+- Port 443 (HTTPS) outbound for MLflow model downloads
+- Port 4840 (OPC-UA) inbound from PLC network (if PLC is on same subnet)
 
 ```bash
-cd infrastructure/k8s
+# Verify MQTT connectivity
+openssl s_client -connect broker.amos-platform.io:8883 -quiet
+```
 
-# Apply all manifests (order matters: namespace → config → storage → apps)
-kubectl apply -f namespace.yaml
-kubectl apply -f configmap.yaml
-kubectl apply -f kafka.yaml            # Wait: kubectl rollout status deployment/kafka -n amos
-kubectl apply -f influxdb.yaml         # Wait: kubectl rollout status deployment/influxdb -n amos
-kubectl apply -f ingestion-service.yaml
-kubectl apply -f tsdb-service.yaml
-kubectl apply -f alert-service.yaml
-kubectl apply -f mlops-deployment.yaml
+### Connecting to a real PLC (OPC-UA)
 
-# Verify all pods are running
+Edit `/etc/amos/edge-config.yaml`:
+
+```yaml
+opcua:
+  endpoint: "opc.tcp://plc-plant-network:4840"  # Replace with your PLC IP
+  application_name: "AMOS Edge Agent"
+  security_policy: "Basic256Sha256"              # Match your PLC config
+  auth_mode: "UsernamePassword"
+  username: "amos_reader"                         # Create read-only PLC account
+  password: "your-secure-password"
+  monitored_nodes:
+    - node_id: "ns=2;i=1001"
+      name: "Spindle_Temperature"
+      unit: "C"
+    - node_id: "ns=2;i=1002"
+      name: "Spindle_Vibration"
+      unit: "mm/s"
+```
+
+---
+
+## 3. Production Kubernetes Deployment
+
+### Prerequisites
+- Kubernetes 1.28+ (EKS, AKS, or on-prem)
+- kubectl configured with cluster access
+- Docker registry credentials (GHCR or private registry)
+- Stateful storage (PVC support for InfluxDB, Kafka)
+
+### Container images
+
+Build and push all services:
+
+```bash
+# Log in to registry
+docker login ghcr.io -u ik123a
+
+# Build all services
+for svc in ingestion-service tsdb-service alert-service mlops-service; do
+  docker build -t ghcr.io/ik123a/AMOS-Autonomous-Manufacturing-OS/$svc:latest ./cloud-core/$svc
+  docker push ghcr.io/ik123a/AMOS-Autonomous-Manufacturing-OS/$svc:latest
+done
+```
+
+Or use the GitHub Actions pipeline (it handles this on push to `main`).
+
+### Deploy the AMOS stack
+
+```bash
+# Create namespace
+kubectl apply -f infrastructure/k8s/namespace.yaml
+
+# Apply all manifests
+kubectl apply -f infrastructure/k8s/
+
+# Check pod status
 kubectl get pods -n amos
+
+# Watch rollout
+kubectl rollout status deployment/ingestion-service -n amos --timeout=120s
+kubectl rollout status deployment/tsdb-service -n amos --timeout=120s
 ```
 
-Expected output:
-```
-NAME                    READY   STATUS    RESTARTS   AGE
-kafka-xxxxx             1/1     Running   0          2m
-influxdb-xxxxx          1/1     Running   0          2m
-ingestion-service      2/2     Running   0          1m
-tsdb-service           2/2     Running   0          1m
-alert-service          2/2     Running   0          1m
-mlops-service          1/1     Running   0          1m
-```
+### External access
 
-### Step 2 — Expose Services
+The K8s services are ClusterIP by default. To expose externally:
 
-**Development (NodePort):**
+**Option A — Ingress (recommended for production):**
 ```bash
-# Not for production — use an ingress controller in production
-kubectl expose deployment ingestion-service \
-  --type=NodePort \
-  --port=8000 \
-  --target-port=8001 \
-  --name=ingestion-svc \
-  -n amos
+kubectl apply -f infrastructure/k8s/ingress.yaml
+# Requires: ingress-nginx controller, cert-manager, and a valid domain
 ```
 
-**Production (Ingress + TLS):**
-```yaml
-# infrastructure/k8s/ingress.yaml (create this file)
-apiVersion: networking.k8s.io/v1
-kind: Ingress
+**Option B — NodePort (staging only):**
+```bash
+# Change service type in each service manifest, or:
+kubectl patch service ingestion-service -n amos -p '{"spec":{"type":"NodePort"}}'
+```
+
+### Persistent storage
+
+InfluxDB and Kafka require persistent volumes. The manifests include `PersistentVolumeClaim` resources but you'll need a `StorageClass` in your cluster:
+
+```bash
+# AWS EKS
+kubectl apply -f - <<'EOF'
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
 metadata:
-  name: amos-ingress
-  namespace: amos
-  annotations:
-    cert-manager.io/cluster-issuer: "letsencrypt-prod"
-spec:
-  tls:
-    - hosts:
-        - api.amos-platform.io
-        - grafana.amos-platform.io
-      secretName: amos-tls-cert
-  rules:
-    - host: api.amos-platform.io
-      http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: tsdb-service
-                port:
-                  number: 8000
-```
-
-### Step 3 — Configure MQTT (Cloud Broker)
-
-Point your edge agents at the cloud MQTT broker. Update `config/edge-config.yaml`:
-
-```yaml
-mqtt:
-  host: "mqtt.amos-platform.io"
-  port: 8883        # TLS port
-  use_tls: true
-  # For production: provide CA cert
-  ca_cert_path: "/etc/ssl/certs/MQTT-Broker-CA.crt"
-```
-
-### Step 4 — First-Time Setup (MLflow + Model Upload)
-
-```bash
-# Port-forward to MLflow locally
-kubectl port-forward svc/mlflow -n amos 5000:5000
-
-# Train and register a model
-cd ai-engine
-python training/train_autoencoder.py \
-  --data ./data/sample_sensor_data.csv \
-  --epochs 100 \
-  --output ./models/anomaly.onnx \
-  --mlflow_uri http://localhost:5000
-
-# Register the model in MLflow UI (http://localhost:5000)
-# Then mark it as "Production" stage
-```
-
-### Step 5 — Verify the System
-
-```bash
-# Get the dashboard service
-kubectl get svc -n amos
-
-# Port-forward dashboard locally
-kubectl port-forward svc/grafana -n amos 3000:3000
-# Open http://localhost:3000 → admin/amos_admin_2024
-
-# Check logs
-kubectl logs -l app=ingestion-service -n amos -f
-```
-
----
-
-## Edge Agent Installation (Physical Hardware)
-
-Target hardware: **Advantech UNO-2271G V3** (Intel Atom x7211RE, 8GB RAM, 64GB SSD)
-
-### Option A — Docker (Recommended for Fast Deployment)
-
-```bash
-# On the edge device
-docker pull ghcr.io/ik123a/amos-edge-agent:latest
-
-# Create config directory
-sudo mkdir -p /etc/amos/models
-sudo cp edge-config.yaml /etc/amos/edge-config.yaml
-
-# Place ONNX model
-sudo cp anomaly.onnx /etc/amos/models/anomaly.onnx
-
-# Run
-docker run -d \
-  --name amos-edge-agent \
-  --restart unless-stopped \
-  --network host \
-  -v /etc/amos:/etc/amos \
-  ghcr.io/ik123a/amos-edge-agent:latest
-
-# Verify
-docker logs amos-edge-agent
-journalctl -u amos-edge-agent -f
-```
-
-### Option B — Bare Metal (Production)
-
-```bash
-# On the edge device
-sudo apt update && sudo apt install -y libssl-dev pkg-config
-
-# Build from source
-git clone https://github.com/ik123a/AMOS-Autonomous-Manufacturing-OS.git
-cd AMOS-Autonomous-Manufacturing-OS/edge-agent
-cargo build --release --features production
-
-# Install binary
-sudo cp target/release/amos-edge-agent /usr/local/bin/
-sudo chown root:root /usr/local/bin/amos-edge-agent
-
-# Create service
-sudo tee /etc/systemd/system/amos-edge-agent.service <<EOF
-[Unit]
-Description=AMOS Edge Agent
-After=network.target
-
-[Service]
-Type=simple
-User=root
-ExecStart=/usr/local/bin/amos-edge-agent --config /etc/amos/edge-config.yaml
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
+  name: amos-gp3
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  fiops: "6000"
+  throughput: "250"
 EOF
 
-sudo systemctl daemon-reload
-sudo systemctl enable amos-edge-agent
-sudo systemctl start amos-edge-agent
-sudo journalctl -u amos-edge-agent -f
+# Then patch the PVCs to use it:
+kubectl patch pvc influxdb-pvc -n amos -p '{"spec":{"storageClassName":"amos-gp3"}}'
+```
+
+### Environment variables for production
+
+Override the ConfigMap values for production:
+
+```bash
+kubectl create configmap amos-config -n amos \
+  --from-literal=KAFKA_BOOTSTRAP_SERVERS="kafka Amos:9092" \
+  --from-literal=INFLUXDB_URL="http://influxdb.amos.svc.cluster.local:8086" \
+  --from-literal=ALERT_THRESHOLD_CRITICAL="0.8" \
+  --dry-run=client -o yaml | kubectl apply -f -
+```
+
+### Secrets management
+
+Never commit secrets to the ConfigMap. Use Kubernetes Secrets or a vault:
+
+```bash
+# Create a TLS secret for the ingress
+kubectl create secret tls amos-tls -n amos \
+  --cert=path/to/cert.pem \
+  --key=path/to/key.pem
+
+# Or use cert-manager to auto-provision via Let's Encrypt
+```
+
+### Verifying the deployment
+
+```bash
+# Port-forward to test locally
+kubectl port-forward -n amos svc/ingestion-service 8001:80
+kubectl port-forward -n amos svc/tsdb-service 8002:80
+kubectl port-forward -n amos svc/grafana 3000:80
+
+# Check all deployments
+kubectl get deploy -n amos
+kubectl get svc -n amos
+kubectl get pods -n amos
+
+# Tail logs
+kubectl logs -n amos deployment/ingestion-service -f
 ```
 
 ---
 
-## Configuration Reference
+## 4. Upgrading
 
-### Edge Agent (`config/edge-config.yaml`)
+### Edge agent (rolling update)
 
-| Section | Key | Description | Default |
-|---------|-----|-------------|---------|
-| `device_id` | — | Unique ID for this edge device | **Required** |
-| `machine_name` | — | Human-readable machine name | — |
-| `location` | — | Physical location | — |
-| `logging.level` | — | Log level: trace, debug, info, warn, error | `info` |
-| `mqtt.host` | — | MQTT broker hostname | **Required** |
-| `mqtt.port` | — | MQTT port | `1883` |
-| `mqtt.use_tls` | — | Enable TLS | `false` |
-| `mqtt.topic_prefix` | — | MQTT topic root | `amos` |
-| `collection_interval_ms` | — | Sensor polling interval | `100` |
-| `heartbeat_interval_secs` | — | Health publish interval | `30` |
-| `inference.enabled` | — | Enable ONNX inference | `true` |
-| `inference.anomaly_threshold` | — | Alert threshold (MSE) | `0.05` |
-| `inference.num_threads` | — | ONNX Runtime threads | `4` |
+```bash
+# Build new binary, copy to device
+scp amos-edge-agent-new amos@edge-device:/usr/local/bin/amos-edge-agent
 
-### Kubernetes ConfigMap (`configmap.yaml`)
+# Restart service
+ssh amos@edge-device "sudo systemctl restart amos-edge-agent"
+```
 
-| Key | Description |
-|-----|-------------|
-| `KAFKA_BOOTSTRAP_SERVERS` | Kafka broker address |
-| `INFLUXDB_URL` | InfluxDB HTTP endpoint |
-| `MLFLOW_TRACKING_URI` | MLflow server URL |
-| `ALERT_THRESHOLD_CRITICAL` | Score above which = critical alert |
-| `ALERT_THRESHOLD_WARNING` | Score above which = warning alert |
+### Cloud services (Kubernetes)
+
+```bash
+# Trigger rolling update (images auto-updated by GitHub Actions)
+kubectl rollout restart deployment/ingestion-service -n amos
+kubectl rollout restart deployment/tsdb-service -n amos
+
+# Or force image pull:
+kubectl patch deployment ingestion-service -n amos \
+  -p '{"spec":{"template":{"spec":{"containers":[{"name":"ingestion-service","imagePullPolicy":"Always"}]}}}}'
+```
 
 ---
 
-## Production Checklist
+## 5. Monitoring & Alerting
 
-- [ ] Change all default passwords (Kafka, InfluxDB, Grafana, MLflow)
-- [ ] Enable TLS on all external-facing services
-- [ ] Configure Kubernetes resource requests/limits on all Deployments
-- [ ] Set up Prometheus + AlertManager for cluster monitoring
-- [ ] Configure Kubernetes Horizontal Pod Autoscaler (HPA) for microservices
-- [ ] Enable Kubernetes NetworkPolicy to restrict pod-to-pod communication
-- [ ] Configure backup for InfluxDB (or use InfluxDB OSS with persistent volumes)
-- [ ] Set up log aggregation (Loki / ELK) for production log analysis
-- [ ] Obtain TLS certificates for all external hostnames
-- [ ] Configure Kubernetes PodDisruptionBudgets for zero-downtime updates
+### Grafana dashboards
+
+1. Open Grafana at http://localhost:3000
+2. Login with admin / amos_admin_2024
+3. Navigate to Dashboards → Browse
+4. Import dashboards from `cloud-core/grafana/dashboards/`
+
+Pre-built dashboards:
+- **AMOS Fleet Overview** — All machines, health scores, active alerts
+- **Anomaly Detection** — Per-machine anomaly scores over time
+- **Edge Agent Health** — CPU, memory, MQTT connection status
+
+### Alert routing
+
+Alerts are sent via webhook to configured endpoints. Edit `cloud-core/alert-service/app/main.py` to add Slack, PagerDuty, or email:
+
+```python
+# Slack example
+if alert.severity == "critical":
+    slack_webhook.send(f":red_alert: {alert.device_id} — {alert.message}")
+```
+
+---
+
+## 6. Troubleshooting
+
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| Edge agent fails to start | Config syntax error | Run `python3 -c "import yaml; yaml.safe_load(open('edge-config.yaml'))"` |
+| No telemetry in dashboard | MQTT not connected | Check `edge-config.yaml` broker URL and firewall |
+| Dashboard shows "no data" | InfluxDB not receiving | Check `docker-compose logs tsdb-service` |
+| High memory usage | Kafka consumer lag | Scale tsdb-service to 2+ replicas |
+| Model not loading on edge | Wrong ONNX path | Verify `inference.model_path` in edge-config.yaml |
+| Kubernetes pod CrashLoopBackOff | Missing env vars | Check `kubectl logs <pod> -n amos` |

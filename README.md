@@ -1,171 +1,155 @@
 # AMOS — Autonomous Manufacturing OS
 
-![Status](https://img.shields.io/badge/status-early%20release-blue)
-![Rust](https://img.shields.io/badge/rust-1.76%2B-orange)
-![Python](https://img.shields.io/badge/python-3.11%2B-green)
-![Kubernetes](https://img.shields.io/badge/k8s-1.28%2B-blue)
+![CI/CD](https://github.com/ik123a/AMOS-Autonomous-Manufacturing-OS/actions/workflows/ci.yaml/badge.svg)
+![Rust](https://img.shields.io/badge/Rust-1.76+-orange?logo=rust)
+![Python](https://img.shields.io/badge/Python-3.11+-blue?logo=python)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.3-blue?logo=typescript)
+![Docker](https://img.shields.io/badge/Docker-K8s-blue?logo=docker)
 
-**AMOS transforms reactive, siloed factory operations into a predictive and autonomous ecosystem.** It detects machine anomalies before failure occurs, using edge-side AI inference on existing PLC data — without requiring any "rip-and-replace" hardware changes.
+---
 
-Target: **40-50% reduction in unplanned downtime**, **18-25% maintenance cost savings**, sub-18-month ROI.
+**AMOS transforms reactive, siloed factory operations into a predictive and autonomous ecosystem.**
+
+It monitors machines via edge agents (Rust), streams data through cloud microservices (Python/FastAPI), runs PyTorch autoencoder anomaly detection at the edge and in the cloud, and presents everything through a React dashboard.
+
+> **Target outcome:** 40–50% reduction in unplanned downtime, 18–25% maintenance cost savings, ROI in under 18 months.
 
 ---
 
 ## What AMOS Does
 
 ```
-Factory Floor                          Cloud                            Dashboard
-─────────────                          ─────                            ─────────
-  CNC-04 ──[OPC-UA/Modbus-TCP]──┐
-                                    │
-  Inject-02 ──[OPC-UA/Modbus-TCP]─┼── Edge Agent (Rust)
-                                    │      │
-  Convey-01 ──[OPC-UA/Modbus-TCP]─┘      │ ONNX Autoencoder Inference
-                                          │ (anomaly score > 0.05 = ALERT)
-                                          │
-                                          ├─ MQTT → Kafka → InfluxDB
-                                          ├─ MQTT → Kafka → Alert Service
-                                          └─ MQTT → Kafka → MLflow
-                                                        │
-                                              ┌─────────▼────────┐
-                                              │  React Dashboard  │
-                                              │  health scores   │
-                                              │  anomaly alerts  │
-                                              │  trend analytics │
-                                              └──────────────────┘
+Machine sensors (temperature, vibration, torque, pressure, etc.)
+    │
+    ▼
+Edge Agent (Rust, Advantech UNO-2271G V3)
+    ├── Reads PLC data via OPC-UA / Modbus-TCP
+    ├── Runs ONNX autoencoder inference (anomaly score)
+    ├── Publishes telemetry + alerts via MQTT (TLS)
+    │
+    ├─→ MQTT: amos/{device_id}/telemetry
+    ├─→ MQTT: amos/{device_id}/alerts
+    └─→ MQTT: amos/{device_id}/health
+            │
+            ▼
+Cloud (Docker/K8s)
+    ├── Kafka — message bus
+    ├── InfluxDB — time-series storage
+    ├── FastAPI services — ingestion, alerts, MLOps
+    └── MLflow — experiment tracking
+            │
+            ▼
+React Dashboard (http://localhost:5173)
+    ├── Fleet overview (all machines, health scores)
+    ├── Per-machine telemetry + anomaly history
+    ├── Alert feed with severity + recommended actions
+    └── Analytics (anomaly score charts, feature attribution)
 ```
-
-**Core value flow:**
-1. Edge agent reads raw sensor data from PLCs via OPC-UA or Modbus-TCP
-2. ONNX autoencoder computes a real-time "anomaly score" — how unusual the current readings are
-3. If the score exceeds the threshold, an alert is published to the cloud
-4. The alert service evaluates rules and notifies the right people
-5. The dashboard displays machine health, active alerts, and historical trends
 
 ---
 
-## Architecture
+## Key Features
 
-| Layer | Technology | Location |
-|-------|-----------|----------|
-| Edge Agent | Rust + Tokio + ONNX Runtime | `edge-agent/` |
-| Cloud Ingestion | Python 3.11 + FastAPI + Kafka | `cloud-core/ingestion-service/` |
-| Time-Series DB | InfluxDB | `cloud-core/` (docker-compose) |
-| Alert Engine | Python 3.11 + FastAPI | `cloud-core/alert-service/` |
-| MLOps | Python 3.11 + MLflow | `cloud-core/mlops-service/` |
-| AI Training | PyTorch + ONNX export | `ai-engine/` |
-| Dashboard | React 18 + MUI + Recharts | `dashboard/` |
-| Infrastructure | Docker Compose / Kubernetes | `cloud-core/`, `infrastructure/k8s/` |
+| Feature | Implementation |
+|---------|---------------|
+| **OPC-UA / Modbus-TCP collector** | Rust async — non-blocking reads from any PLC |
+| **ONNX edge inference** | PyTorch autoencoder → ONNX Runtime — detects anomalies in <10ms |
+| **MQTT streaming** | TLS 1.3, certificate-authenticated, auto-reconnect |
+| **Time-series DB** | InfluxDB with 1-second resolution, retention policies |
+| **Alert routing** | FastAPI service evaluates rules, sends to Slack/PagerDuty/email |
+| **MLOps** | MLflow experiment tracking, model registry, one-click promote to edge |
+| **Explainable AI** | SHAP values show which sensor triggered each alert |
+| **Federated Learning** | Architecture ready — share model updates, not raw data |
+| **Zero rip-and-replace** | Works with existing PLCs and sensors via open standards |
 
 ---
 
 ## Quick Start
 
-### 1. Clone and Explore
-
-```bash
-git clone https://github.com/ik123a/AMOS-Autonomous-Manufacturing-OS.git
-cd AMOS-Autonomous-Manufacturing-OS
-
-# See the full project structure
-ls -la
-# edge-agent/       Rust edge device agent
-# cloud-core/       Python microservices + Docker Compose
-# ai-engine/        PyTorch autoencoder training
-# dashboard/        React 18 dashboard
-# infrastructure/  Kubernetes manifests
-# docs/             Architecture, API reference, deployment
-```
-
-### 2. Start the Cloud Stack (Docker Compose)
+### 1. Start the cloud stack
 
 ```bash
 cd cloud-core
-docker compose up -d
+docker-compose up -d
 
-# Wait for all services to be healthy
-docker compose ps
+# Wait for services to be healthy
+docker-compose ps
 
-# You'll have:
-#   ingestion-service  :8001   FastAPI — MQTT → Kafka
-#   tsdb-service       :8002   FastAPI — Kafka → InfluxDB  ← use this
-#   alert-service      :8003   FastAPI — alert evaluation
-#   mlops-service      :8004   FastAPI — model registry
-#   Kafka              :9092   Message broker
-#   InfluxDB           :8086   Time-series database
-#   MLflow             :5000   Experiment tracking UI
-#   Grafana            :3000   Dashboards (admin/amos_admin_2024)
+# Services available:
+#   Dashboard   http://localhost:5173
+#   Alert API  http://localhost:8003
+#   TSDB API   http://localhost:8002
+#   Ingestion  http://localhost:8001
+#   MLOps API  http://localhost:8004
+#   Grafana    http://localhost:3000  (admin / amos_admin_2024)
+#   Kafka UI   http://localhost:8080
+#   MLflow     http://localhost:5000
 ```
 
-### 3. Build the Edge Agent
-
-```bash
-cd edge-agent
-
-# Install Rust (if needed)
-curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-source ~/.cargo/env
-
-# Build
-cargo build --release
-# Binary → target/release/amos-edge-agent
-```
-
-### 4. Train a Model (or use the example)
-
-```bash
-cd ai-engine
-pip install -r requirements.txt
-
-# See sample data format
-head -3 data/sample_sensor_data.csv
-# timestamp,Spindle_Temperature,Spindle_Vibration,Spindle_Torque,Coolant_Flow,Cutting_Speed,Feed_Rate
-# 2024-04-01 00:00:00,58.2,0.12,45.3,8.2,1150,195
-# 2024-04-01 00:00:01,58.3,0.11,45.1,8.2,1150,195
-
-# Train an autoencoder on "normal" data → produces anomaly.onnx
-python training/train_autoencoder.py \
-  --data ./data/sample_sensor_data.csv \
-  --epochs 100 \
-  --output ./models/anomaly.onnx
-
-# Verify: run inference with the trained model
-python inference/onnx_runner.py --model ./models/anomaly.onnx
-```
-
-### 5. Run the Dashboard
+### 2. Build the dashboard
 
 ```bash
 cd dashboard
-npm install
+npm install --legacy-peer-deps
 npm run dev
-# → Open http://localhost:5173
+# Open http://localhost:5173
 ```
 
-### 6. Run the Edge Agent
+### 3. Build the edge agent
 
 ```bash
 cd edge-agent
-
-# Point the edge agent at the local Docker MQTT broker
-# Edit config/edge-config.yaml — set mqtt.host to your Docker host IP
-# (On Linux: your LAN IP; On macOS/Windows: use docker.for.<host>.local)
-
+cargo build --release
 ./target/release/amos-edge-agent --config config/edge-config.yaml
+
+# Or with Docker:
+docker build -t amos-edge-agent ./edge-agent
+docker run --rm -v $(pwd)/config:/etc/amos amos-edge-agent
 ```
 
-You should see output like:
+### 4. Simulate data (no PLC needed)
+
+```bash
+# Generate synthetic sensor data → MQTT → cloud
+cd cloud-core
+python3 scripts/simulate_sensor_data.py --device edge-plant1-001 --duration 3600
 ```
-AMOS Edge Agent v0.1.0 starting up...
-Device: edge-plant1-001 @ Building-A-Line-3
-MQTT connected to 192.168.1.100:1883
-Starting OPC-UA collector: opc.tcp://192.168.1.42:4840 (6 nodes)
-Starting Modbus collector: 192.168.1.43:502 (8 registers)
-Health: cpu=12.4% mem=38.7% status=healthy
-Anomaly score: 0.012 [NORMAL]
-Anomaly score: 0.031 [NORMAL]
-Anomaly score: 0.073 [ANOMALY DETECTED] → published to MQTT
-```
+
+---
+
+## Architecture
+
+See [`docs/architecture.md`](docs/architecture.md) for the full technical architecture.
+
+### Edge Agent (Rust)
+- `src/main.rs` — entry point, collector orchestration
+- `src/config.rs` — YAML config deserialization + validation
+- `src/mqtt.rs` — MQTT client (rumqttc), TLS, reconnect
+- `src/inference.rs` — ONNX Runtime wrapper, anomaly scoring
+- `src/health.rs` — system health monitor
+- `src/collectors/opcua.rs` — OPC-UA data collector
+- `src/collectors/modbus.rs` — Modbus-TCP data collector
+
+### Cloud Microservices (Python/FastAPI)
+| Service | Port | Responsibility |
+|---------|------|----------------|
+| `ingestion-service` | 8001 | MQTT → Kafka |
+| `tsdb-service` | 8002 | Kafka → InfluxDB |
+| `alert-service` | 8003 | Alert evaluation + routing |
+| `mlops-service` | 8004 | Model training + registry |
+
+### AI Engine
+- `ai-engine/training/train_autoencoder.py` — train autoencoder on normal operational data
+- `ai-engine/training/export_onnx.py` — export trained model to ONNX
+- `ai-engine/inference/onnx_runner.py` — ONNX Runtime inference wrapper
+- `ai-engine/inference/stream_processor.py` — sliding-window inference for streaming data
+
+### React Dashboard (TypeScript/React 18)
+- Dashboard page: fleet overview, health scores, active alerts
+- Machines page: per-machine detail, sensor trends, anomaly timeline
+- Alerts page: alert feed with severity, ack/resolve workflow
+- Analytics page: anomaly score charts, SHAP feature attribution
+- Settings page: system config, edge agent management
 
 ---
 
@@ -178,122 +162,91 @@ device_id: "edge-plant1-001"
 machine_name: "CNC-Machine-04"
 location: "Building-A-Line-3"
 
-# Change this to your MQTT broker address
 mqtt:
-  host: "192.168.1.100"
-  port: 1883
-  use_tls: false
-  topic_prefix: "amos"
+  broker_host: "broker.amos-platform.io"
+  broker_port: 8883
+  use_tls: true
 
-# OPC-UA: connect to your PLC's OPC-UA server
 opcua:
-  endpoint: "opc.tcp://192.168.1.42:4840"
+  endpoint: "opc.tcp://plc-host:4840"
   monitored_nodes:
-    - "ns=2;i=1"   # Spindle_Temperature
-    - "ns=2;i=2"   # Spindle_Vibration
-    - "ns=2;i=3"   # Spindle_Torque
-    - "ns=2;i=4"   # Coolant_Flow
-    - "ns=2;i=5"   # Cutting_Speed
-    - "ns=2;i=6"   # Feed_Rate
-
-# Modbus-TCP: alternative to OPC-UA
-modbus:
-  host: "192.168.1.43"
-  port: 502
-  slave_id: 1
-  registers:
-    - name: "Spindle_Temperature"
-      address: 0
-      scale: 0.1
+    - node_id: "ns=2;i=1001"
+      name: "Spindle_Temperature"
       unit: "C"
 
-# ONNX inference
 inference:
   enabled: true
   model_path: "/opt/amos/models/anomaly.onnx"
-  anomaly_threshold: 0.05   # Alert triggers when MSE > this
-  input_size: 6            # Number of sensor channels
-  buffer_size: 12          # Sliding window size
+  anomaly_threshold: 0.05
+  input_size: 6
+  buffer_size: 12
 ```
 
 ### Cloud Services
 
-Environment variables (in docker-compose.yml or K8s ConfigMap):
+All service configuration is in `cloud-core/docker-compose.yml` via environment variables. For production, override in a `cloud-core/.env` file or Kubernetes ConfigMap.
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `KAFKA_BOOTSTRAP_SERVERS` | `kafka:9092` | Kafka broker address |
-| `INFLUXDB_URL` | `http://influxdb:8086` | InfluxDB endpoint |
-| `MLFLOW_TRACKING_URI` | `http://mlflow:5000` | MLflow server |
-| `ALERT_THRESHOLD_WARNING` | `0.05` | Warning alert threshold |
-| `ALERT_THRESHOLD_CRITICAL` | `0.10` | Critical alert threshold |
+---
+
+## Deployment
+
+See [`docs/deployment.md`](docs/deployment.md) for full production deployment instructions.
+
+### Production (Kubernetes)
+
+```bash
+# Build + push all container images
+docker build -t ghcr.io/ik123a/AMOS-Autonomous-Manufacturing-OS/ingestion-service:latest ./cloud-core/ingestion-service
+docker push ghcr.io/ik123a/AMOS-Autonomous-Manufacturing-OS/ingestion-service:latest
+# (repeat for tsdb-service, alert-service, mlops-service)
+
+# Deploy to K8s
+kubectl apply -f infrastructure/k8s/namespace.yaml
+kubectl apply -f infrastructure/k8s/
+
+# Check rollout status
+kubectl rollout status deployment/ingestion-service -n amos
+```
+
+### Edge Agent on Hardware
+
+```bash
+# Copy binary to Advantech UNO-2271G V3
+scp amos-edge-agent amos@edge-device:/usr/local/bin/
+
+# Set up as systemd service
+sudo tee /etc/systemd/system/amos-edge-agent.service <<'EOF'
+[Unit]
+Description=AMOS Edge Agent
+
+[Service]
+ExecStart=/usr/local/bin/amos-edge-agent --config /etc/amos/edge-config.yaml
+Restart=always
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl enable amos-edge-agent
+sudo systemctl start amos-edge-agent
+```
 
 ---
 
 ## API Reference
 
-The tsdb-service exposes a REST API on port 8002:
+See [`docs/api-reference.md`](docs/api-reference.md) for the full REST API documentation.
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/machines` | GET | List all machines + health scores |
-| `/api/machines/{id}` | GET | Single machine detail |
-| `/api/machines/{id}/telemetry` | GET | Recent sensor readings |
-| `/api/machines/{id}/health` | GET | Machine health history |
-| `/api/alerts` | GET | All alerts (filter by severity, status) |
-| `/api/alerts/{id}/acknowledge` | PUT | Acknowledge an alert |
-| `/api/alerts/{id}/resolve` | PUT | Resolve an alert |
-| `/api/analytics/{id}/anomaly-score` | GET | Anomaly score time series |
-| `/api/analytics/{id}/feature-attribution` | GET | Which sensors triggered alert |
-| `/api/models/train` | POST | Trigger model training |
-| `/api/models/deploy` | POST | Deploy model to edge agent |
-
-Full API docs: [docs/api-reference.md](docs/api-reference.md)
-
----
-
-## The AI Model (Autoencoder)
-
-AMOS uses a **deep autoencoder** trained exclusively on *normal* operational data. It learns to reconstruct normal patterns. When reconstruction error spikes, something abnormal is happening — even if that exact failure mode was never seen in training.
-
-**Architecture:** 6-layer symmetric autoencoder
-```
-Input(6) → 64 → 32 → 16 → 8 → 16 → 32 → 64 → Output(6)
-```
-
-**Why autoencoders for predictive maintenance:**
-- Only requires "normal" data to train (no labeled failure data needed)
-- Detects novel failure modes, not just known patterns
-- Achieves 98%+ accuracy on industrial benchmarks
-- Explainable: SHAP values show *which* sensors triggered the alert
-
-**Federated Learning (future):** Share only anonymized model gradient updates, never raw sensor data, to build fleet-wide models across customer deployments.
-
----
-
-## Dashboard Screenshots / UI
-
-The dashboard runs at `http://localhost:5173` (dev) and provides:
-
-- **Overview** — Fleet health grid, active alert count, system status
-- **Machines** — Per-machine health score (0-100), sensor sparklines, last seen
-- **Alerts** — Feed of anomaly alerts with severity, timestamp, affected sensors, recommended action
-- **Analytics** — Anomaly score chart, feature attribution bar chart, health trend
-- **Settings** — Notification channels, alert rules, edge agent management
-
-The UI uses an industrial dark theme (MUI with custom `--amos-bg` palette) designed for plant-floor displays and monitors.
-
----
-
-## Deployment Options
-
-| Environment | Command | Best For |
-|-------------|---------|---------|
-| Local dev | `cd cloud-core && docker compose up -d` | First-time exploration |
-| Single-server staging | Docker Compose on a VM | Pilot customer deployment |
-| Production | Kubernetes manifests in `infrastructure/k8s/` | Multi-customer SaaS |
-
-See [docs/deployment.md](docs/deployment.md) for the full Kubernetes production guide including edge agent bare-metal and Docker installation.
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/machines` | List all machines + health scores |
+| GET | `/api/machines/{id}` | Machine detail (sensors, anomaly history) |
+| GET | `/api/machines/{id}/telemetry` | Raw sensor data for a machine |
+| GET | `/api/alerts` | Alert feed (filter by severity, machine, time) |
+| POST | `/api/alerts/{id}/acknowledge` | Acknowledge an alert |
+| GET | `/api/analytics/{id}/anomaly-score` | Anomaly score time series |
+| GET | `/api/models` | List model registry |
+| POST | `/api/models/train` | Trigger model retraining |
 
 ---
 
@@ -301,123 +254,82 @@ See [docs/deployment.md](docs/deployment.md) for the full Kubernetes production 
 
 ```
 AMOS/
-├── edge-agent/                    # Rust edge device agent
+├── edge-agent/           # Rust edge device software
 │   ├── src/
-│   │   ├── main.rs               # Entry point, CLI, service orchestration
-│   │   ├── config.rs             # YAML config deserialization + helpers
-│   │   ├── mqtt.rs               # MQTT client (rumqttc) with TLS + reconnect
-│   │   ├── inference.rs          # ONNX Runtime autoencoder inference engine
-│   │   ├── health.rs             # System health monitor + MQTT publisher
-│   │   └── collectors/
-│   │       ├── opcua.rs          # OPC-UA collector (production-ready interface)
-│   │       └── modbus.rs         # Modbus-TCP collector (same pattern)
-│   ├── config/edge-config.yaml  # Sample configuration
-│   ├── Cargo.toml                # Rust dependencies
-│   └── Dockerfile               # Edge agent container image
+│   │   ├── main.rs       # Entry point
+│   │   ├── config.rs     # YAML config + validation
+│   │   ├── mqtt.rs       # MQTT client (rumqttc)
+│   │   ├── inference.rs  # ONNX Runtime inference
+│   │   ├── health.rs     # System health monitor
+│   │   └── collectors/    # OPC-UA and Modbus collectors
+│   ├── Cargo.toml
+│   ├── Dockerfile
+│   └── config/           # Default config files
 │
-├── cloud-core/                    # Python cloud microservices
-│   ├── docker-compose.yml         # Full local stack (Kafka, InfluxDB, MLflow, etc.)
-│   ├── ingestion-service/        # MQTT → Kafka bridge (FastAPI)
-│   ├── tsdb-service/             # Kafka → InfluxDB + REST API (FastAPI)
-│   ├── alert-service/            # Alert evaluation + routing (FastAPI)
-│   ├── mlops-service/            # Model registry + training triggers (FastAPI)
-│   └── grafana/                  # Grafana dashboards + datasources
+├── cloud-core/           # Cloud microservices
+│   ├── ingestion-service/  # MQTT → Kafka bridge (FastAPI, Port 8001)
+│   ├── tsdb-service/      # Kafka → InfluxDB writer (FastAPI, Port 8002)
+│   ├── alert-service/      # Alert evaluation + routing (FastAPI, Port 8003)
+│   ├── mlops-service/     # MLflow + model registry (FastAPI, Port 8004)
+│   ├── kafka-config/
+│   ├── grafana/           # Dashboard provisioning
+│   ├── docker-compose.yml
+│   └── scripts/
 │
-├── ai-engine/                     # PyTorch ML pipeline
-│   ├── training/
-│   │   └── train_autoencoder.py  # Full training pipeline (data → model)
-│   ├── inference/
-│   │   ├── onnx_runner.py        # ONNX Runtime inference wrapper
-│   │   └── stream_processor.py   # Real-time sliding window inference
-│   ├── export_onnx.py            # PyTorch → ONNX export + validation
-│   ├── requirements.txt
-│   └── data/sample_sensor_data.csv
+├── ai-engine/           # ML training and inference
+│   ├── training/         # PyTorch autoencoder training
+│   ├── inference/       # ONNX runtime wrappers
+│   └── models/          # Model store
 │
-├── dashboard/                     # React 18 dashboard
+├── dashboard/           # React 18 dashboard
 │   ├── src/
-│   │   ├── App.jsx               # Router + theme provider
-│   │   ├── pages/                # Dashboard, Machines, Alerts, Analytics, Settings
-│   │   └── components/           # HealthCard, AlertBadge, Sidebar, StatusDot
-│   └── package.json
+│   │   ├── pages/       # Dashboard, Machines, Alerts, Analytics, Settings
+│   │   └── components/  # HealthCard, Sidebar, StatusDot, AlertBadge
+│   ├── package.json
+│   └── vite.config.ts
 │
-├── infrastructure/k8s/            # Kubernetes manifests
-│   ├── namespace.yaml             # amos namespace
-│   ├── configmap.yaml             # Shared env vars
-│   ├── kafka.yaml                 # Kafka broker
-│   ├── influxdb.yaml             # Time-series DB + PVC
-│   ├── ingestion-service.yaml    # MQTT → Kafka
-│   ├── tsdb-service.yaml        # Kafka → InfluxDB
-│   ├── alert-service.yaml        # Alert evaluation
-│   ├── mlops-deployment.yaml     # Model training
-│   └── mlops-service-svc.yaml
+├── infrastructure/      # K8s deployment manifests
+│   └── k8s/
 │
-├── docs/
-│   ├── architecture.md            # System design, component inventory, data flow
-│   ├── api-reference.md           # Full REST API documentation
-│   └── deployment.md              # Local dev, K8s, edge agent installation
+├── docs/                # Architecture, API, deployment guides
+│   ├── architecture.md
+│   ├── api-reference.md
+│   └── deployment.md
 │
-├── .gitignore
-├── CONTRIBUTING.md                # Dev setup, code style, PR process
-├── LICENSE                       # Proprietary license
-├── README.md
-└── push-to-github.sh             # Helper script for GitHub setup
+├── .github/workflows/   # CI/CD (GitHub Actions)
+├── CONTRIBUTING.md
+├── LICENSE
+└── README.md
 ```
 
 ---
 
-## Performance Targets
+## Tech Stack
 
-| Metric | Target |
-|--------|--------|
-| Edge inference latency | < 10ms per reading window |
-| End-to-end alert latency | < 2s (sensor → MQTT → Kafka → alert) |
-| MQTT reconnect time | < 5s after broker restart |
-| Anomaly detection accuracy | ROC-AUC > 0.90 |
-| False positive rate | < 5% of alerts |
-| Supported edge devices per cloud instance | 500+ |
-| Data retention (InfluxDB) | 90 days hot, 2 years cold |
+| Layer | Technology |
+|-------|-----------|
+| Edge Agent | Rust, tokio, rumqttc, ONNX Runtime, OPC-UA |
+| Cloud Runtime | Docker, Kubernetes 1.28+, Helm |
+| Message Bus | Apache Kafka |
+| Time-Series DB | InfluxDB 2.7 |
+| Cloud Services | Python 3.11, FastAPI, aiokafka, influxdb-client |
+| ML Training | PyTorch 2.2, ONNX, MLflow |
+| ML Inference | ONNX Runtime 2.0 |
+| Dashboard | React 18, TypeScript 5.3, MUI 5, Recharts, React Router 6 |
+| CI/CD | GitHub Actions, Docker Buildx |
 
 ---
 
-## Key Dependencies
+## License
 
-**Edge Agent (Rust):**
-- `tokio` — async runtime
-- `rumqttc` — MQTT client
-- `serde`, `serde_yaml` — config parsing
-- `onnxruntime` — ML inference
-- `tracing`, `tracing-subscriber` — structured logging
-- `clap` — CLI argument parsing
-- `sysinfo` — system health monitoring
-- `ndarray` — array operations for ONNX tensor building
-
-**Cloud (Python):**
-- `fastapi` + `uvicorn` — HTTP server
-- `aiokafka` — async Kafka client
-- `influxdb-client` — InfluxDB write API
-- `mlflow` — experiment tracking
-- `httpx` — async HTTP client
-
-**Dashboard:**
-- `react` 18 + `react-router-dom` 6
-- `@mui/material` — component library
-- `recharts` — charting
-- `axios` — API client
+Proprietary — see [`LICENSE`](LICENSE). All rights reserved.
 
 ---
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, code style guides, testing, and the PR process.
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development setup, code style, and PR process.
 
 ---
 
-## Roadmap
-
-- [ ] **Month 6** — MVP pilot validation at partner site
-- [ ] **Month 9** — Onboard 3-5 pilot customers; self-service onboarding
-- [ ] **Month 12** — Formal product launch; $1M ARR target
-- [ ] **Month 15** — Predictive Maintenance Scheduler (auto-generate work orders from RUL predictions)
-- [ ] **Month 18** — Energy Optimization Module (10-15% energy savings)
-- [ ] **Month 24** — Federated Learning engine; SOC 2 Type II
-- [ ] **Month 30** — First international deployment (Germany)
+**Built with the vision of making every factory floor predictive, not reactive.**

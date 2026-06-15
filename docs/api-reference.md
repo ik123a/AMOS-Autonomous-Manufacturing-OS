@@ -1,126 +1,154 @@
 # AMOS API Reference
 
-Base URL: `http://localhost:8002` (local dev) | `https://api.amos-platform.io` (prod)
+Base URL (local): `http://localhost:8001`
+Base URL (production): `https://api.amos-platform.io`
 
-All endpoints return JSON. Authentication via `Authorization: Bearer <token>` header.
+## Authentication
+
+All API endpoints (except `/health`) require a Bearer token:
+
+```
+Authorization: Bearer <token>
+```
+
+Tokens are issued by the auth service and expire after 24 hours. Request one via:
+
+```bash
+curl -X POST https://api.amos-platform.io/auth/token \
+  -H "Content-Type: application/json" \
+  -d '{"client_id": "your-client-id", "client_secret": "your-secret"}'
+```
 
 ---
 
-## Machine Management
+## Alert Service — Port 8003
+
+### `GET /health`
+
+Health check (no auth required).
+
+**Response `200`:**
+```json
+{
+  "status": "healthy",
+  "version": "0.1.0",
+  "uptime_seconds": 86400
+}
+```
+
+---
+
+### `GET /api/alerts`
+
+Fetch all alerts, newest first.
+
+**Query parameters:**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `limit` | int | 50 | Max alerts to return |
+| `offset` | int | 0 | Pagination offset |
+| `severity` | string | all | `critical`, `warning`, `info`, or `all` |
+| `machine_id` | string | all | Filter by device |
+| `since` | ISO8601 | 7 days ago | Start of time window |
+
+**Response `200`:**
+```json
+{
+  "total": 142,
+  "offset": 0,
+  "alerts": [
+    {
+      "id": "alt_8f3a2b",
+      "device_id": "edge-plant1-001",
+      "timestamp": "2024-06-14T08:23:41Z",
+      "severity": "critical",
+      "sensor_channel": "Spindle_Vibration",
+      "anomaly_score": 0.847,
+      "threshold": 0.05,
+      "recommended_action": "Inspect spindle bearing — possible wear detected",
+      "acknowledged": false,
+      "acknowledged_by": null,
+      "acknowledged_at": null
+    }
+  ]
+}
+```
+
+---
+
+### `POST /api/alerts/{id}/acknowledge`
+
+Acknowledge an alert (marks it as seen).
+
+**Request body (optional):**
+```json
+{
+  "comment": "Scheduled for maintenance next Tuesday"
+}
+```
+
+**Response `200`:**
+```json
+{
+  "id": "alt_8f3a2b",
+  "acknowledged": true,
+  "acknowledged_by": "operator@plant.com",
+  "acknowledged_at": "2024-06-14T10:45:00Z"
+}
+```
+
+---
+
+### `GET /api/alerts/stats`
+
+Aggregate alert statistics.
+
+**Query parameters:** `since` (ISO8601, default 30 days ago)
+
+**Response `200`:**
+```json
+{
+  "total": 142,
+  "by_severity": { "critical": 12, "warning": 89, "info": 41 },
+  "by_machine": {
+    "edge-plant1-001": 45,
+    "edge-plant1-002": 38
+  },
+  "top_sensors": [
+    { "sensor": "Spindle_Vibration", "count": 67 },
+    { "sensor": "Spindle_Temperature", "count": 43 }
+  ]
+}
+```
+
+---
+
+## TSDB Service — Port 8002
+
+### `GET /health`
+
+Health check (no auth required).
+
+---
 
 ### `GET /api/machines`
 
-Returns all registered machines with their current health scores.
+List all registered machines and their latest health scores.
 
 **Response `200`:**
 ```json
 {
   "machines": [
     {
-      "id": "edge-plant1-001",
-      "name": "CNC-Machine-04",
+      "device_id": "edge-plant1-001",
+      "machine_name": "CNC-Machine-04",
       "location": "Building-A-Line-3",
+      "health_score": 87,
       "status": "healthy",
-      "health_score": 94,
-      "last_seen": "2024-06-14T10:30:00Z",
-      "ip_address": "192.168.1.42"
-    }
-  ],
-  "total": 1
-}
-```
-
-### `GET /api/machines/{machine_id}`
-
-Returns detailed information for a single machine.
-
-**Response `200`:**
-```json
-{
-  "id": "edge-plant1-001",
-  "name": "CNC-Machine-04",
-  "location": "Building-A-Line-3",
-  "status": "healthy",
-  "health_score": 94,
-  "last_seen": "2024-06-14T10:30:00Z",
-  "uptime_seconds": 86400,
-  "sensors": ["Spindle_Temperature", "Spindle_Vibration", "Spindle_Torque", "Coolant_Flow", "Cutting_Speed", "Feed_Rate"],
-  "mqtt_connected": true,
-  "opcua_connected": true,
-  "model_loaded": true,
-  "cpu_usage_percent": 12.4,
-  "memory_usage_percent": 38.7,
-  "disk_usage_percent": 22.1
-}
-```
-
-**Response `404`:**
-```json
-{ "error": "Machine not found" }
-```
-
----
-
-## Telemetry & Health
-
-### `GET /api/machines/{machine_id}/telemetry`
-
-Returns recent telemetry readings for a machine.
-
-| Query Param | Type | Default | Description |
-|-------------|------|---------|-------------|
-| `since` | ISO8601 | 1h ago | Start time |
-| `limit` | int | 100 | Max readings (max 10000) |
-
-**Response `200`:**
-```json
-{
-  "machine_id": "edge-plant1-001",
-  "readings": [
-    {
-      "timestamp": "2024-06-14T10:29:55Z",
-      "Spindle_Temperature": 62.4,
-      "Spindle_Vibration": 0.18,
-      "Spindle_Torque": 48.2,
-      "Coolant_Flow": 8.1,
-      "Cutting_Speed": 1200,
-      "Feed_Rate": 200
-    }
-  ],
-  "count": 100,
-  "period_start": "2024-06-14T09:30:00Z",
-  "period_end": "2024-06-14T10:30:00Z"
-}
-```
-
-### `GET /api/machines/{machine_id}/health`
-
-Returns health history for a machine.
-
-| Query Param | Type | Default | Description |
-|-------------|------|---------|-------------|
-| `since` | ISO8601 | 24h ago | Start time |
-
-**Response `200`:**
-```json
-{
-  "machine_id": "edge-plant1-001",
-  "current": {
-    "status": "healthy",
-    "uptime_seconds": 86400,
-    "cpu_usage_percent": 12.4,
-    "memory_usage_percent": 38.7,
-    "disk_usage_percent": 22.1,
-    "opcua_connected": true,
-    "mqtt_connected": true,
-    "model_loaded": true
-  },
-  "history": [
-    {
-      "timestamp": "2024-06-14T09:30:00Z",
-      "status": "healthy",
-      "cpu_usage_percent": 11.8,
-      "memory_usage_percent": 37.2
+      "last_seen": "2024-06-14T08:23:00Z",
+      "active_alerts": 2,
+      "uptime_hours": 720.4
     }
   ]
 }
@@ -128,276 +156,268 @@ Returns health history for a machine.
 
 ---
 
-## Alerts
+### `GET /api/machines/{device_id}`
 
-### `GET /api/alerts`
-
-Returns all alerts across all machines.
-
-| Query Param | Type | Default | Description |
-|-------------|------|---------|-------------|
-| `severity` | string | all | Filter: `critical`, `warning`, `info` |
-| `status` | string | all | Filter: `active`, `acknowledged`, `resolved` |
-| `since` | ISO8601 | 24h ago | Start time |
-| `limit` | int | 50 | Max results (max 200) |
+Detailed view for a single machine.
 
 **Response `200`:**
 ```json
 {
-  "alerts": [
+  "device_id": "edge-plant1-001",
+  "machine_name": "CNC-Machine-04",
+  "location": "Building-A-Line-3",
+  "health_score": 87,
+  "status": "healthy",
+  "last_seen": "2024-06-14T08:23:00Z",
+  "uptime_hours": 720.4,
+  "active_alerts": 2,
+  "sensors": [
     {
-      "id": "uuid-1234",
-      "machine_id": "edge-plant1-001",
-      "machine_name": "CNC-Machine-04",
-      "severity": "warning",
-      "status": "active",
-      "anomaly_score": 0.073,
-      "threshold": 0.05,
-      "triggered_at": "2024-06-14T08:15:00Z",
-      "message": "Anomaly detected: vibration elevated",
-      "affected_sensors": ["Spindle_Vibration"],
-      "recommended_action": "Inspect spindle bearing; check lubrication system"
+      "name": "Spindle_Vibration",
+      "unit": "mm/s",
+      "current_value": 2.34,
+      "normal_range_min": 0.0,
+      "normal_range_max": 4.50,
+      "last_updated": "2024-06-14T08:22:58Z"
     }
   ],
-  "total": 1,
-  "critical_count": 0,
-  "warning_count": 1,
-  "info_count": 0
+  "anomaly_history": [
+    {
+      "timestamp": "2024-06-14T06:12:00Z",
+      "score": 0.72,
+      "sensor_triggered": "Spindle_Vibration"
+    }
+  ]
 }
-```
-
-### `PUT /api/alerts/{alert_id}/acknowledge`
-
-Acknowledge an alert (marks it as seen by an operator).
-
-**Response `200`:**
-```json
-{ "id": "uuid-1234", "status": "acknowledged", "acknowledged_at": "2024-06-14T10:35:00Z" }
-```
-
-### `PUT /api/alerts/{alert_id}/resolve`
-
-Resolve an alert manually.
-
-**Request body:**
-```json
-{ "resolution": "Replaced spindle bearing; vibration returned to normal" }
-```
-
-**Response `200`:**
-```json
-{ "id": "uuid-1234", "status": "resolved", "resolved_at": "2024-06-14T11:00:00Z" }
 ```
 
 ---
 
-## Analytics
+### `GET /api/machines/{device_id}/telemetry`
 
-### `GET /api/analytics/{machine_id}/anomaly-score`
+Fetch raw telemetry for a machine.
 
-Returns anomaly score time series for a machine.
+**Query parameters:**
 
-| Query Param | Type | Default | Description |
-|-------------|------|---------|-------------|
-| `since` | ISO8601 | 7d ago | Start time |
-| `interval` | string | `5m` | Aggregation interval: `1m`, `5m`, `1h`, `1d` |
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `sensors` | string | Yes | Comma-separated list, e.g. `Spindle_Temperature,Spindle_Vibration` |
+| `start` | ISO8601 | Yes | Start of time window |
+| `end` | ISO8601 | No | End (defaults to now) |
+| `interval` | string | No | `raw`, `1m`, `5m`, `1h` (default `raw`) |
+| `limit` | int | No | Max points (default 1000, max 10000) |
 
 **Response `200`:**
 ```json
 {
-  "machine_id": "edge-plant1-001",
+  "device_id": "edge-plant1-001",
+  "start": "2024-06-13T00:00:00Z",
+  "end": "2024-06-14T00:00:00Z",
+  "interval": "1h",
+  "sensors": ["Spindle_Temperature", "Spindle_Vibration"],
+  "data": [
+    {
+      "timestamp": "2024-06-13T01:00:00Z",
+      "Spindle_Temperature": 48.2,
+      "Spindle_Vibration": 1.87
+    }
+  ]
+}
+```
+
+---
+
+### `GET /api/analytics/{device_id}/anomaly-score`
+
+Anomaly score time series for a machine.
+
+**Query parameters:** `start`, `end` (ISO8601), `interval` (default `1h`)
+
+**Response `200`:**
+```json
+{
+  "device_id": "edge-plant1-001",
+  "start": "2024-06-07T00:00:00Z",
+  "end": "2024-06-14T00:00:00Z",
   "threshold": 0.05,
   "series": [
-    { "timestamp": "2024-06-14T00:00:00Z", "score": 0.012, "anomaly": false },
-    { "timestamp": "2024-06-14T00:05:00Z", "score": 0.031, "anomaly": false },
-    { "timestamp": "2024-06-14T00:10:00Z", "score": 0.073, "anomaly": true }
-  ]
-}
-```
-
-### `GET /api/analytics/{machine_id}/feature-attribution`
-
-Returns which sensors contributed most to an anomaly alert.
-
-**Query params:** `alert_id` (required)
-
-**Response `200`:**
-```json
-{
-  "alert_id": "uuid-1234",
-  "machine_id": "edge-plant1-001",
-  "attribution": [
-    { "sensor": "Spindle_Vibration", "contribution": 0.52, "actual_value": 0.31, "normal_range": "0.05-0.18" },
-    { "sensor": "Spindle_Torque", "contribution": 0.31, "actual_value": 61.4, "normal_range": "40-55" },
-    { "sensor": "Spindle_Temperature", "contribution": 0.12, "actual_value": 68.2, "normal_range": "55-72" },
-    { "sensor": "Coolant_Flow", "contribution": 0.05, "actual_value": 8.1, "normal_range": "7.5-9.0" }
-  ],
-  "shap_values_computed_at": "2024-06-14T08:15:05Z"
-}
-```
-
-### `GET /api/analytics/{machine_id}/health-trend`
-
-Returns the machine's overall health score over time.
-
-| Query Param | Type | Default | Description |
-|-------------|------|---------|-------------|
-| `since` | ISO8601 | 30d ago | Start time |
-| `interval` | string | `1d` | Aggregation interval |
-
-**Response `200`:**
-```json
-{
-  "machine_id": "edge-plant1-001",
-  "trend": [
-    { "date": "2024-06-10", "avg_health_score": 97.2, "alerts": 0 },
-    { "date": "2024-06-11", "avg_health_score": 95.8, "alerts": 1 },
-    { "date": "2024-06-12", "avg_health_score": 94.1, "alerts": 2 }
+    { "timestamp": "2024-06-07T01:00:00Z", "score": 0.012, "is_anomaly": false },
+    { "timestamp": "2024-06-10T14:23:00Z", "score": 0.72, "is_anomaly": true }
   ]
 }
 ```
 
 ---
 
-## MLOps (Model Management)
+## Ingestion Service — Port 8001
+
+### `GET /health`
+
+Health check (no auth required).
+
+---
+
+### `GET /api/status`
+
+Ingestion pipeline status.
+
+**Response `200`:**
+```json
+{
+  "kafka_connected": true,
+  "mqtt_connected": 12,
+  "messages_per_second": 847.3,
+  "queue_depth": 0
+}
+```
+
+---
+
+## MLOps Service — Port 8004
+
+### `GET /health`
+
+Health check (no auth required).
+
+---
 
 ### `GET /api/models`
 
-List all registered anomaly detection models.
+List registered models in the model registry.
 
 **Response `200`:**
 ```json
 {
   "models": [
     {
-      "id": "model-uuid-001",
-      "name": "anomaly_detector",
-      "version": "v2.1.0",
-      "uploaded_at": "2024-06-01T00:00:00Z",
-      "accuracy_roc_auc": 0.94,
-      "false_positive_rate": 0.03,
-      "status": "production",
-      "target_machine": "CNC-Machine-04"
+      "name": "anomaly_autoencoder_v2",
+      "version": 3,
+      "stage": "staging",
+      "accuracy": 0.974,
+      "trained_on_samples": 480000,
+      "created_at": "2024-06-10T12:00:00Z",
+      "created_by": "ml-pipeline"
     }
   ]
 }
 ```
 
+---
+
 ### `POST /api/models/train`
 
-Trigger a new model training run.
+Trigger model retraining on new data.
 
 **Request body:**
 ```json
 {
-  "machine_id": "edge-plant1-001",
-  "training_data_start": "2024-04-01T00:00:00Z",
-  "training_data_end": "2024-05-31T23:59:59Z",
+  "model_name": "anomaly_autoencoder_v2",
+  "training_window_days": 14,
   "validation_split": 0.2,
-  "epochs": 100,
-  "learning_rate": 0.001
+  "epochs": 100
 }
 ```
 
-**Response `202`:**
+**Response `202` (async):**
 ```json
 {
-  "run_id": "mlflow-run-uuid",
-  "status": "started",
-  "mlflow_ui_url": "http://mlflow:5000/#/experiments/0/runs/mlflow-run-uuid"
-}
-```
-
-### `GET /api/models/{model_id}/export`
-
-Export a trained model as an ONNX file for edge deployment.
-
-**Response `200`:**
-```json
-{
-  "model_id": "model-uuid-001",
-  "onnx_download_url": "/api/models/model-uuid-001/download",
-  "signature": {
-    "inputs": [{ "name": "input", "shape": [6], "dtype": "float32" }],
-    "outputs": [{ "name": "output", "shape": [6], "dtype": "float32" }]
-  },
-  "model_hash": "sha256:abc123..."
-}
-```
-
-### `POST /api/models/deploy`
-
-Deploy a model to a specific edge agent.
-
-**Request body:**
-```json
-{
-  "model_id": "model-uuid-001",
-  "target_machine_id": "edge-plant1-001"
-}
-```
-
-**Response `200`:**
-```json
-{
-  "deployment_id": "deploy-uuid",
-  "model_id": "model-uuid-001",
-  "target_machine_id": "edge-plant1-001",
-  "status": "deployed",
-  "deployed_at": "2024-06-14T12:00:00Z"
+  "run_id": "run_4a8f2c",
+  "status": "pending",
+  "mlflow_run_url": "https://mlflow.amos-platform.io/#/runs/run_4a8f2c"
 }
 ```
 
 ---
 
-## Webhooks
+### `POST /api/models/{name}/promote`
 
-### `POST /api/webhooks`
-
-Register a webhook to receive real-time alert notifications.
+Promote a model from staging to production.
 
 **Request body:**
 ```json
 {
-  "url": "https://your-system.com/amos-webhook",
-  "events": ["alert.created", "alert.resolved", "machine.health_degraded"],
-  "secret": "your-webhook-secret"
+  "version": 3
 }
 ```
 
-**Response `201`:**
+**Response `200`:**
 ```json
 {
-  "id": "webhook-uuid",
-  "url": "https://your-system.com/amos-webhook",
-  "events": ["alert.created", "alert.resolved", "machine.health_degraded"],
-  "created_at": "2024-06-14T12:00:00Z"
+  "name": "anomaly_autoencoder_v2",
+  "version": 3,
+  "stage": "production",
+  "deployed_to_edge": ["edge-plant1-001", "edge-plant1-002"]
 }
 ```
 
-Webhook payloads are signed with `X-Amos-Signature: sha256=<hmac>`.
+---
+
+### `GET /api/models/{name}/explain/{timestamp`
+
+Get feature attribution (SHAP values) for a specific anomaly detection event.
+
+**Query parameters:** `timestamp` (ISO8601 of the anomaly event)
+
+**Response `200`:**
+```json
+{
+  "timestamp": "2024-06-14T06:12:00Z",
+  "device_id": "edge-plant1-001",
+  "anomaly_score": 0.72,
+  "shap_values": {
+    "Spindle_Temperature": 0.31,
+    "Spindle_Vibration": 0.82,
+    "Spindle_Torque": -0.05,
+    "Coolant_Flow": 0.02
+  },
+  "top_contributors": [
+    { "sensor": "Spindle_Vibration", "contribution": 0.82, "direction": "above_normal" }
+  ]
+}
+```
+
+---
+
+## WebSocket — Real-time Updates
+
+Connect to `wss://api.amos-platform.io/ws` for live updates (JWT required).
+
+**Subscribe to machine updates:**
+```json
+{"type": "subscribe", "channel": "machines"}
+```
+
+**Subscribe to alerts:**
+```json
+{"type": "subscribe", "channel": "alerts"}
+```
+
+**Server events:**
+```json
+{"type": "alert", "data": {"id": "alt_8f3a2b", "severity": "critical", "device_id": "edge-plant1-001"}}
+{"type": "health_score", "data": {"device_id": "edge-plant1-001", "score": 87}}
+```
 
 ---
 
 ## Error Responses
 
-All errors follow this format:
+All endpoints return errors in this format:
 
 ```json
 {
-  "error": "Human-readable error message",
-  "code": "MACHINE_NOT_FOUND",
-  "details": {}
+  "error": "not_found",
+  "message": "Machine edge-plant1-999 not found",
+  "status_code": 404
 }
 ```
 
-| HTTP Status | Code | Meaning |
-|-------------|------|---------|
-| 400 | `INVALID_REQUEST` | Malformed request body or params |
-| 401 | `UNAUTHORIZED` | Missing or invalid auth token |
-| 403 | `FORBIDDEN` | Valid token but insufficient permissions |
-| 404 | `MACHINE_NOT_FOUND` | Machine ID does not exist |
-| 404 | `ALERT_NOT_FOUND` | Alert ID does not exist |
-| 422 | `VALIDATION_ERROR` | Request is valid but business logic rejects it |
-| 429 | `RATE_LIMITED` | Too many requests |
-| 500 | `INTERNAL_ERROR` | Server-side error |
+| HTTP Code | Error | Meaning |
+|-----------|-------|---------|
+| 400 | `bad_request` | Invalid parameters |
+| 401 | `unauthorized` | Missing or invalid token |
+| 403 | `forbidden` | Insufficient permissions |
+| 404 | `not_found` | Resource does not exist |
+| 429 | `rate_limited` | Too many requests |
+| 500 | `internal_error` | Server-side error |
+| 503 | `service_unavailable` | Dependency down (Kafka, InfluxDB) |
