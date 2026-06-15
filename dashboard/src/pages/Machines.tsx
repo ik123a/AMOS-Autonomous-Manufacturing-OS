@@ -168,7 +168,7 @@ export default function Machines() {
                     </TableCell>
                   </TableRow>
                   <TableRow>
-                    <TableCell colSpan={7} p={0}>
+                    <TableCell colSpan={7} sx={{ p: 0 }}>
                       <Collapse in={expanded === machine.device_id} timeout="auto" unmountOnExit>
                         <RowDetail machineId={machine.device_id} />
                       </Collapse>
