@@ -44,7 +44,7 @@ tokio-cron-scheduler = "0.10"
 sysinfo = "0.30"
 
 # ML inference
-onnxruntime = "0.2"
+onnxruntime = "0.0.14"
 ndarray = "0.15"
 
 [profile.release]
