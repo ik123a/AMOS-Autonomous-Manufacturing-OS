@@ -32,16 +32,16 @@ The following diagram outlines the telemetry flow and service architecture of th
 
 ```mermaid
 graph TD
-    subgraph Edge Layer (Factory Floor)
+    subgraph edge_layer ["Edge Layer (Factory Floor)"]
         PLC["Factory PLCs & Sensors"] -- "OPC-UA / Modbus-TCP" --> EA["AMOS Edge Agent (Rust)"]
         EA -- "Local Inference (<10ms)" --> OR["ONNX Runtime (anomaly.onnx)"]
     end
 
-    subgraph Transport
+    subgraph transport ["Transport Layer"]
         EA -- "MQTT over TLS 1.3" --> MQTT["MQTT Broker (mqtt.amos-platform.io)"]
     end
 
-    subgraph Cloud Layer (Kubernetes - 'amos' Namespace)
+    subgraph cloud_layer ["Cloud Layer (Kubernetes - 'amos' Namespace)"]
         MQTT -- "MQTT Bridge" --> Ingestion["Ingestion Service (FastAPI)"]
         Ingestion -- "Publish Telemetry" --> Kafka["Apache Kafka (Message Broker)"]
         ZK["Zookeeper"] <--> Kafka
@@ -56,14 +56,14 @@ graph TD
         MLOps -- "Deploy Models" --> EA
     end
 
-    subgraph Client Layer (Operator Interface)
+    subgraph client_layer ["Client Layer (Operator Interface)"]
         React["React 18 Dashboard"] -- "Query Telemetry" --> TSDB_Svc
         React -- "Manage Alarms" --> Alert_Svc
     end
     
-    style Edge Layer fill:#2d3748,stroke:#ed8936,stroke-width:2px
-    style Cloud Layer fill:#1a202c,stroke:#4299e1,stroke-width:2px
-    style Client Layer fill:#2d3748,stroke:#48bb78,stroke-width:2px
+    style edge_layer fill:#2d3748,stroke:#ed8936,stroke-width:2px
+    style cloud_layer fill:#1a202c,stroke:#4299e1,stroke-width:2px
+    style client_layer fill:#2d3748,stroke:#48bb78,stroke-width:2px
 ```
 
 ---
