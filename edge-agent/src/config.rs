@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use std::path::Path;
+use tracing::info;
 
 /// Logging configuration
 #[derive(Debug, Clone, Deserialize)]

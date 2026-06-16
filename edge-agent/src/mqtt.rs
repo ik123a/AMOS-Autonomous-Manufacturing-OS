@@ -4,9 +4,7 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use rumqttc::{AsyncClient, Event, MqttOptions, Packet, QoS, Transport};
 use serde::Serialize;
-use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::Mutex;
 use tracing::{debug, error, info, warn};
 
 use crate::config::MqttConfig;
@@ -55,8 +53,6 @@ impl MqttClient {
         // Spawn background connection handler with reconnection
         let host = config.host.clone();
         let port = config.port;
-        let use_tls = config.use_tls;
-        let client_id = config.client_id.clone();
         tokio::spawn(async move {
             loop {
                 match eventloop.poll().await {

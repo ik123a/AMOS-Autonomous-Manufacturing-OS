@@ -1,10 +1,8 @@
-use crate::config::{EdgeConfig, MonitoredNode};
+use crate::config::EdgeConfig;
 use crate::mqtt::MqttClient;
 use anyhow::{Context, Result};
-use async_trait::async_trait;
 use chrono::Utc;
 use serde::Serialize;
-use std::collections::HashMap;
 use std::sync::Arc;
 use tokio::time::{interval, Duration};
 use tracing::{error, info, warn};

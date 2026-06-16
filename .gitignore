@@ -3,10 +3,16 @@ __pycache__/ *.py[cod] *$py.class
 *.so .eggs/ *.egg-info/ .eggs/
 
 # Rust build artifacts
-target/ debug/ release/
+target/
+debug/
+release/
 
 # Node modules & build outputs
-node_modules/ dist/ build/ .parcel-cache/ *.log
+node_modules/
+dist/
+build/
+.parcel-cache/
+*.log
 *.lock
 
 # IDE

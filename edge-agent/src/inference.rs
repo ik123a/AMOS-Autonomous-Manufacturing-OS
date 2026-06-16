@@ -10,9 +10,7 @@ use onnxruntime::session::{GraphOptimizationLevel, Session, SessionOptions};
 use serde::Serialize;
 use std::path::Path;
 use std::time::Duration;
-use tracing::{debug, info, warn};
-
-use crate::config::InferenceConfig;
+use tracing::{debug, info};
 
 /// Per-channel anomaly result with explainability data.
 #[derive(Debug, Clone, Serialize)]

@@ -8,7 +8,7 @@ use anyhow::Result;
 use clap::Parser;
 use std::sync::Arc;
 use tokio::signal;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
 
 use crate::collectors::{modbus::ModbusCollector, opcua::OpcUaCollector};
@@ -43,7 +43,7 @@ async fn main() -> Result<()> {
     let mqtt = Arc::new(tokio::sync::Mutex::new(mqtt));
 
     // ── Inference Engine ──────────────────────────────────────────────────────
-    let inference = if config.inference.enabled {
+    let _inference = if config.inference.enabled {
         let eng = InferenceEngine::new(&config.inference).await?;
         info!(
             "ONNX inference enabled — {} input dims, threshold={:.4}",
@@ -60,7 +60,6 @@ async fn main() -> Result<()> {
     let opcua_endpoint = config.opcua.endpoint.clone();
     let opcua_nodes_count = config.opcua.monitored_nodes.len();
     let mqtt_for_opcua = mqtt.clone();
-    let device_id_opcua = config.device_id.clone();
     let config_opcua = config.clone();
     let opcua_handle = tokio::spawn(async move {
         let collector = OpcUaCollector::new(config_opcua, mqtt_for_opcua);
