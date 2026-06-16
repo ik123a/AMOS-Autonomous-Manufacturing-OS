@@ -72,6 +72,9 @@ pub struct MqttConfig {
     /// MQTT topic prefix (default: "amos")
     #[serde(default = "default_topic_prefix")]
     pub topic_prefix: String,
+    /// Keepalive interval in seconds
+    #[serde(default = "default_keepalive_secs")]
+    pub keepalive_secs: u64,
 }
 
 fn default_mqtt_port() -> u16 {
@@ -84,6 +87,10 @@ fn default_true() -> bool {
 
 fn default_topic_prefix() -> String {
     "amos".to_string()
+}
+
+fn default_keepalive_secs() -> u64 {
+    60
 }
 
 /// OPC-UA server connection
@@ -241,7 +248,7 @@ impl EdgeConfig {
     }
 
     /// Validate required fields
-    pub fn validate(&self) {
+    pub fn validate(&self) -> Result<()> {
         if self.device_id.is_empty() {
             anyhow::bail!("device_id must not be empty");
         }
@@ -255,6 +262,7 @@ impl EdgeConfig {
             anyhow::bail!("inference.model_path must be set when inference is enabled");
         }
         info!("Configuration validated successfully");
+        Ok(())
     }
 
     /// Get the MQTT telemetry topic
@@ -295,6 +303,7 @@ mod tests {
                 ca_cert_path: None,
                 use_tls: true,
                 topic_prefix: "amos".to_string(),
+                keepalive_secs: 60,
             },
             opcua: OpcUaConfig {
                 endpoint: "opc.tcp://localhost:4840".to_string(),

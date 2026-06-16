@@ -14,6 +14,7 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 use crate::collectors::{modbus::ModbusCollector, opcua::OpcUaCollector};
 use crate::config::EdgeConfig;
 use crate::health::publish_health_loop;
+use crate::inference::InferenceEngine;
 use crate::mqtt::MqttClient;
 
 const VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -23,7 +24,7 @@ async fn main() -> Result<()> {
     // Parse CLI args
     let cli = Cli::parse();
     let config = EdgeConfig::from_file(&cli.config)?;
-    config.validate();
+    config.validate()?;
 
     // Init logging
     init_tracing(&config.logging.level);
@@ -74,9 +75,10 @@ async fn main() -> Result<()> {
     let modbus_handle = if let Some(ref modbus_cfg) = config.modbus {
         let mqtt_for_modbus = mqtt.clone();
         let device_id_modbus = config.device_id.clone();
-        let config_modbus = config.clone();
+        let modbus_cfg_clone = modbus_cfg.clone();
         Some(tokio::spawn(async move {
-            let collector = ModbusCollector::new(config_modbus, device_id_modbus, mqtt_for_modbus);
+            let collector =
+                ModbusCollector::new(modbus_cfg_clone, device_id_modbus, mqtt_for_modbus);
             collector.run().await
         }))
     } else {
@@ -99,7 +101,18 @@ async fn main() -> Result<()> {
         _ = signal::ctrl_c() => {
             info!("SIGINT received — shutting down gracefully");
         }
-        _ = signal::SIGTERM => {
+        _ = async {
+            #[cfg(unix)]
+            {
+                if let Ok(mut stream) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+                    stream.recv().await;
+                }
+            }
+            #[cfg(not(unix))]
+            {
+                std::future::pending::<()>().await;
+            }
+        } => {
             info!("SIGTERM received — shutting down gracefully");
         }
     }

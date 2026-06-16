@@ -158,21 +158,23 @@ jobs:
           password: ${{ secrets.GITHUB_TOKEN }}
       - name: Build and push all services
         run: |
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           for svc in ingestion-service tsdb-service alert-service mlops-service; do
-            docker build -t ghcr.io/${{ github.repository }}/$svc:latest ./cloud-core/$svc
-            docker push ghcr.io/${{ github.repository }}/$svc:latest
+            docker build -t ghcr.io/${REPO_LOWER}/$svc:latest ./cloud-core/$svc
+            docker push ghcr.io/${REPO_LOWER}/$svc:latest
           done
       - uses: azure/k8s-set-context@v3
         with:
           kubeconfig: ${{ secrets.KUBE_CONFIG }}
       - name: Deploy to Kubernetes
         run: |
+          REPO_LOWER=$(echo "${{ github.repository }}" | tr '[:upper:]' '[:lower:]')
           kubectl apply -f infrastructure/k8s/namespace.yaml || true
           kubectl apply -f infrastructure/k8s/ || true
-          kubectl set image deployment/ingestion-service ingestion-service=ghcr.io/${{ github.repository }}/ingestion-service:latest -n amos
-          kubectl set image deployment/tsdb-service tsdb-service=ghcr.io/${{ github.repository }}/tsdb-service:latest -n amos
-          kubectl set image deployment/alert-service alert-service=ghcr.io/${{ github.repository }}/alert-service:latest -n amos
-          kubectl set image deployment/mlops-service mlops-service=ghcr.io/${{ github.repository }}/mlops-service:latest -n amos
+          kubectl set image deployment/ingestion-service ingestion-service=ghcr.io/${REPO_LOWER}/ingestion-service:latest -n amos
+          kubectl set image deployment/tsdb-service tsdb-service=ghcr.io/${REPO_LOWER}/tsdb-service:latest -n amos
+          kubectl set image deployment/alert-service alert-service=ghcr.io/${REPO_LOWER}/alert-service:latest -n amos
+          kubectl set image deployment/mlops-service mlops-service=ghcr.io/${REPO_LOWER}/mlops-service:latest -n amos
           kubectl rollout status deployment/ingestion-service -n amos --timeout=120s || true
           kubectl rollout status deployment/tsdb-service -n amos --timeout=120s || true
           kubectl rollout status deployment/alert-service -n amos --timeout=120s || true
