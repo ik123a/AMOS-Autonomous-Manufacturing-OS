@@ -1,16 +1,18 @@
-//! AMOS Edge Agent — ONNX Runtime inference engine for anomaly detection.
+//! AMOS Edge Agent — Pure-Rust ONNX inference engine for anomaly detection.
 //!
-//! Loads a pre-trained autoencoder model and runs real-time anomaly scoring
-//! on streaming sensor data windows. Provides per-sensor explainability via
-//! reconstruction error attribution.
+//! Loads a pre-trained autoencoder model using tract-onnx and runs real-time
+//! anomaly scoring on streaming sensor data windows. Provides per-sensor explainability
+//! via reconstruction error attribution.
 
 use anyhow::{Context, Result};
 use ndarray::Array2;
-use onnxruntime::session::{GraphOptimizationLevel, Session, SessionOptions};
 use serde::Serialize;
 use std::path::Path;
-use std::time::Duration;
 use tracing::{debug, info};
+use tract_onnx::prelude::*;
+
+pub type RunnableModel =
+    SimplePlan<TypedFact, Box<dyn TypedOp>, Graph<TypedFact, Box<dyn TypedOp>>>;
 
 /// Per-channel anomaly result with explainability data.
 #[derive(Debug, Clone, Serialize)]
@@ -55,14 +57,14 @@ const SENSOR_LABELS: &[&str] = &[
 /// ONNX-based anomaly detection engine using a deep autoencoder.
 /// Uses reconstruction error: high error = anomalous behavior.
 pub struct InferenceEngine {
-    session: Session,
+    model: RunnableModel,
     input_dim: usize,
     model_name: String,
     threshold: f64,
 }
 
 impl InferenceEngine {
-    /// Load a pre-trained ONNX autoencoder model.
+    /// Load a pre-trained ONNX autoencoder model using tract-onnx.
     pub async fn new(config: &crate::config::InferenceConfig) -> Result<Self> {
         let model_path = Path::new(&config.model_path);
         if !model_path.exists() {
@@ -74,31 +76,25 @@ impl InferenceEngine {
 
         info!("Loading ONNX model from: {}", config.model_path);
 
-        let mut session_options = SessionOptions::default();
-        session_options.set_graph_optimization_level(GraphOptimizationLevel::Level3);
-        session_options.set_inter_op_num_threads(config.num_threads as i32);
-        session_options.set_intra_op_num_threads(config.num_threads as i32);
-        session_options.set_session_timeout(Duration::from_secs(300));
+        let model = tract_onnx::onnx()
+            .model_for_path(model_path)
+            .context("Failed to load ONNX model via tract")?
+            .into_optimized()
+            .context("Failed to optimize model")?
+            .into_runnable()
+            .context("Failed to compile runnable model")?;
 
-        let session = Session::from_file(&session_options, &config.model_path)
-            .context("Failed to load ONNX model")?;
-
-        // Infer input dimension from session input metadata
-        let inputs = session.get_inputs().ok();
-        let input_dim = inputs
-            .and_then(|i| i.input_type().as_tensor())
-            .map(|t| t.dims().last().copied().unwrap_or(config.input_size as i64) as usize)
-            .unwrap_or(config.input_size);
+        let input_dim = config.input_size;
 
         let engine = Self {
-            session,
+            model,
             input_dim,
             model_name: config.model_name.clone(),
             threshold: config.anomaly_threshold,
         };
 
         info!(
-            "ONNX engine ready: model={}, input_dim={}, threshold={:.4}",
+            "ONNX engine (tract-onnx) ready: model={}, input_dim={}, threshold={:.4}",
             engine.model_name, engine.input_dim, engine.threshold
         );
 
@@ -116,28 +112,25 @@ impl InferenceEngine {
         let start = std::time::Instant::now();
 
         // Build input tensor [1, input_dim] as f32
-        let input: Array2<f32> = Array2::from_shape_vec((1, self.input_dim), {
-            let mut v = Vec::with_capacity(self.input_dim);
-            for (i, &val) in values.iter().enumerate() {
-                if i < self.input_dim {
-                    v.push(val as f32);
-                }
+        let mut input_data = ndarray::Array2::<f32>::zeros((1, self.input_dim));
+        for (i, &val) in values.iter().enumerate() {
+            if i < self.input_dim {
+                input_data[[0, i]] = val as f32;
             }
-            v
-        })
-        .context("invalid input shape")?;
+        }
+        let input_tensor: Tensor = input_data.into();
 
-        let outputs = self.session.run(vec![input.into()])?;
+        // Run model through tract-onnx
+        let outputs = self.model.run(tvec!(input_tensor))?;
         let exec_time = start.elapsed().as_secs_f64() * 1000.0;
 
         // Extract output tensor — first output is reconstruction
         let output_tensor = &outputs[0];
-        let shape = output_tensor.dimensions();
-        let output_dim = shape.last().copied().unwrap_or(self.input_dim as i64) as usize;
+        let shape = output_tensor.shape();
+        let output_dim = shape.last().copied().unwrap_or(self.input_dim);
 
         // Get output values
-        let mut reconstruction = vec![0.0f32; output_dim];
-        output_tensor.copy_to_slice(&mut reconstruction);
+        let reconstruction: &[f32] = output_tensor.as_slice::<f32>()?;
 
         // Compute per-feature reconstruction error (|input - output|)
         let feature_errors: Vec<f64> = values
