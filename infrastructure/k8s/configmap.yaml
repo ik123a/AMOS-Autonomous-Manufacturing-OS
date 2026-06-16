@@ -4,7 +4,7 @@ metadata:
   name: amos-config
   namespace: amos
 data:
-  KAFKA_BOOTSTRAP_SERVERS: "kafka.kafka.svc.cluster.local:9092"
+  KAFKA_BOOTSTRAP_SERVERS: "kafka.amos.svc.cluster.local:9092"
   INFLUXDB_URL: "http://influxdb.amos.svc.cluster.local:8086"
   INFLUXDB_ORG: "amos"
   INFLUXDB_BUCKET: "amos_telemetry"

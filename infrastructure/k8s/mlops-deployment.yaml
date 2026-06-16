@@ -28,3 +28,14 @@ spec:
         - name: model-store
           persistentVolumeClaim:
             claimName: model-store-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-store-pvc
+  namespace: amos
+spec:
+  accessModes: [ReadWriteOnce]
+  resources:
+    requests:
+      storage: 10Gi
