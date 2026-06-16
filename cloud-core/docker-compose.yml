@@ -54,7 +54,7 @@ services:
     environment:
       - DOCKER_INFLUXDB_INIT_MODE=setup
       - DOCKER_INFLUXDB_INIT_USERNAME=admin
-      - DOCKER_INFLUXDB_INIT_PASSWORD=amos_admin_2024
+      - DOCKER_INFLUXDB_INIT_PASSWORD=${INFLUXDB_PASSWORD:-amos_admin_2024}
       - DOCKER_INFLUXDB_INIT_ORG=amos
       - DOCKER_INFLUXDB_INIT_BUCKET=amos_telemetry
       - DOCKER_INFLUXDB_INIT_RETENTION=90d
@@ -72,7 +72,7 @@ services:
       - ./grafana/datasources:/etc/grafana/provisioning/datasources
     environment:
       - GF_SECURITY_ADMIN_USER=admin
-      - GF_SECURITY_ADMIN_PASSWORD=amos_admin_2024
+      - GF_SECURITY_ADMIN_PASSWORD=${GRAFANA_PASSWORD:-amos_admin_2024}
       - GF_INSTALL_PLUGINS=influxdb-flightsql-datasource
 
   # ─── MLflow Experiment Tracker ──────────────────────────────

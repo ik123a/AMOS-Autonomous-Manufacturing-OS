@@ -19,7 +19,7 @@ mqtt:
   port: 8883
   client_id: "amos-edge-plant1-001"
   username: "edge-device"
-  password: "${MQTT_PASSWORD}"  # Use env var in production
+  password: null  # Set in env var in production
   ca_cert_path: "/etc/amos/certs/ca.pem"
   use_tls: true
   topic_prefix: "amos"
@@ -31,7 +31,7 @@ opcua:
   security_policy: "Basic256Sha256"
   auth_mode: "Username"
   username: "${OPCUA_USERNAME}"
-  password: "${OPCUA_PASSWORD}"
+  password: null
   reconnect_delay_secs: 5
 
   # Sensor nodes to monitor
