@@ -147,13 +147,13 @@ python3 scripts/simulate_sensor_data.py --device edge-plant1-001 --duration 3600
 ## Directory & Architecture Map
 
 ### Edge Agent (Rust)
-*   [main.rs](file:///c:/Users/SKV/Desktop/Projects/AMOS/edge-agent/src/main.rs) — Entry point, orchestrates data collectors and connections.
-*   [config.rs](file:///c:/Users/SKV/Desktop/Projects/AMOS/edge-agent/src/config.rs) — Decodes YAML configuration and validates inputs.
-*   [mqtt.rs](file:///c:/Users/SKV/Desktop/Projects/AMOS/edge-agent/src/mqtt.rs) — Robust MQTT client with auto-reconnection and TLS support.
-*   [inference.rs](file:///c:/Users/SKV/Desktop/Projects/AMOS/edge-agent/src/inference.rs) — ONNX Runtime integration for running local anomaly models.
-*   [health.rs](file:///c:/Users/SKV/Desktop/Projects/AMOS/edge-agent/src/health.rs) — Collects CPU, memory, network, and disk metrics.
-*   [collectors/opcua.rs](file:///c:/Users/SKV/Desktop/Projects/AMOS/edge-agent/src/collectors/opcua.rs) — OPC-UA industrial protocol client.
-*   [collectors/modbus.rs](file:///c:/Users/SKV/Desktop/Projects/AMOS/edge-agent/src/collectors/modbus.rs) — Modbus-TCP industrial protocol client.
+*   [main.rs](edge-agent/src/main.rs) — Entry point, orchestrates data collectors and connections.
+*   [config.rs](edge-agent/src/config.rs) — Decodes YAML configuration and validates inputs.
+*   [mqtt.rs](edge-agent/src/mqtt.rs) — Robust MQTT client with auto-reconnection and TLS support.
+*   [inference.rs](edge-agent/src/inference.rs) — ONNX Runtime integration for running local anomaly models.
+*   [health.rs](edge-agent/src/health.rs) — Collects CPU, memory, network, and disk metrics.
+*   [collectors/opcua.rs](edge-agent/src/collectors/opcua.rs) — OPC-UA industrial protocol client.
+*   [collectors/modbus.rs](edge-agent/src/collectors/modbus.rs) — Modbus-TCP industrial protocol client.
 
 ### Cloud Microservices (Python/FastAPI)
 | Service | Port | Directory | Responsibility |
@@ -250,7 +250,7 @@ See `docs/api-reference.md` for full parameter schemas.
 
 ## License
 
-Proprietary — see [LICENSE](file:///c:/Users/SKV/Desktop/Projects/AMOS/LICENSE). All rights reserved.
+Proprietary — see [LICENSE](LICENSE). All rights reserved.
 
 ---
 
