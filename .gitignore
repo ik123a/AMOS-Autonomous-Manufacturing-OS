@@ -39,3 +39,27 @@ coverage/ .coverage htmlcov/
 
 # Temporary files
 *.tmp *.bak *.swp
+# Auto-added safety ignores for large files and temp data
+.venv/
+venv/
+env/
+*.pyc
+*.pyo
+.next/
+.gradle/
+local.properties
+*.iml
+.idea/libraries/
+.idea/caches/
+*.h5
+*.bin
+*.gguf
+*.zst
+*.tar.gz
+*.iso
+*.vmdk
+*.zip
+*.7z
+*.rar
+.pytest_cache/
+.turbo/
