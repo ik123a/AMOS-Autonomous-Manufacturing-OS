@@ -55,7 +55,7 @@ export default function Dashboard() {
   return (
     <Box>
       {/* Header */}
-      <Box display="flex" justifyContent="space-between" alignItems="flex-start" mb={3}>
+      <Box display="flex" justifyContent="space-between" alignItems="flex-start" mb={3} sx={{ flexDirection: { xs: 'column', md: 'row' }, gap: 2 }}>
         <Box>
           <Typography variant="h4" fontWeight={700} gutterBottom sx={{ letterSpacing: '-0.02em' }}>
             Factory Overview

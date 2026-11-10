@@ -27,10 +27,11 @@ export default function Sidebar() {
     <Drawer
       variant="permanent"
       sx={{
-        width: DRAWER_WIDTH,
+        width: { xs: '100%', md: DRAWER_WIDTH },
         flexShrink: 0,
         '& .MuiDrawer-paper': {
-          width: DRAWER_WIDTH,
+          width: { xs: '100%', md: DRAWER_WIDTH },
+          position: { xs: 'relative', md: 'fixed' },
           boxSizing: 'border-box',
           borderRight: '1px solid #2a3442',
           backgroundColor: '#0d1a2a',
@@ -60,7 +61,7 @@ export default function Sidebar() {
       <Divider sx={{ borderColor: '#2a3442' }} />
 
       {/* Nav Items */}
-      <List sx={{ px: 1.5, mt: 1.5 }}>
+      <List sx={{ px: 1.5, mt: 1.5, display: { xs: 'flex', md: 'block' }, overflowX: 'auto' }}>
         {navItems.map((item) => {
           const active = location.pathname === item.path;
           return (
@@ -68,6 +69,7 @@ export default function Sidebar() {
               key={item.path}
               onClick={() => navigate(item.path)}
               sx={{
+                flexShrink: 0,
                 borderRadius: 2, mb: 0.5, py: 1,
                 backgroundColor: active ? 'rgba(0, 212, 255, 0.10)' : 'transparent',
                 borderLeft: active ? '3px solid #00d4ff' : '3px solid transparent',

@@ -7,17 +7,16 @@ import Alerts from './pages/Alerts';
 import Analytics from './pages/Analytics';
 import Settings from './pages/Settings';
 
-const DRAWER_WIDTH = 240;
 
 export default function App() {
   return (
-    <Box display="flex" minHeight="100vh" bgcolor="background.default">
+    <Box display="flex" minHeight="100vh" bgcolor="background.default" sx={{ flexDirection: { xs: 'column', md: 'row' } }}>
       <Sidebar />
       <Box
         component="main"
         sx={{
           flexGrow: 1,
-          ml: `${DRAWER_WIDTH}px`,
+          minWidth: 0,
           p: 3,
           minHeight: '100vh',
         }}
